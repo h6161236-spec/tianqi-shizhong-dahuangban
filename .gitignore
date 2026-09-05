@@ -1,0 +1,15 @@
+# PlatformIO build artifacts
+firmware/.pio/
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Preview screenshot artifacts
+preview/_shot/
+
+# OS junk
+Thumbs.db
+Desktop.ini
+
+# Reasonix workspace dir (runtime state)
+/开发板1/

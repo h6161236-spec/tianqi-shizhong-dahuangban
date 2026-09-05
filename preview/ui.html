@@ -1,0 +1,2516 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>皮卡丘天气钟 · 5页面系统预览</title>
+<!-- 字体拉不到也没事,每个字体栈都留了本机回退 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+
+<style>
+/* =====================================================================
+   工作台配色 —— 低饱和冷灰衬底,屏幕是唯一发光体
+   ===================================================================== */
+:root {
+  --bench:      #14161a;
+  --bench-hi:   #1b1e24;
+  --bench-top:  #22262d;
+  --rule:       #303540;
+  --rule-soft:  #24272d;
+  --ink:        #c9cdd4;
+  --ink-mid:    #8b919c;
+  --ink-dim:    #636974;
+  --live:       #f2c21a;   /* 与屏幕主色(皮卡丘黄)同色,只用在可操作元件上 */
+  --live-dim:   #e8d9a8;
+
+  --sans: "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --cjk: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bench);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--rule-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rule-soft) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: .5;
+  z-index: 0;
+}
+
+.wrap {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 28px;
+}
+.head h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  font-family: var(--cjk);
+}
+.head .spec {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-dim);
+  letter-spacing: .02em;
+}
+.head .spec b { color: var(--ink-mid); font-weight: 500; }
+
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 268px;
+  gap: 32px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .stage { grid-template-columns: 1fr; }
+}
+
+/* ---------- 屏幕托架 ---------- */
+.cradle {
+  position: relative;
+  background: linear-gradient(180deg, var(--bench-top), var(--bench-hi));
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 12px 32px rgba(0,0,0,.4);
+}
+.cradle::before, .cradle::after {
+  content: "";
+  position: absolute;
+  width: 9px; height: 9px;
+  border: 1px solid var(--rule);
+}
+.cradle::before { top: 8px;    left: 8px;  border-right: 0; border-bottom: 0; }
+.cradle::after  { bottom: 8px; right: 8px; border-left: 0;  border-top: 0; }
+
+.panel-shell {
+  position: relative;
+  padding: 9px;
+  background: #0a0b0d;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px #34383f, 0 0 0 4px #1b1d21, 0 8px 24px rgba(0,0,0,.55);
+}
+.panel-shell::after {
+  content: "";
+  position: absolute;
+  inset: -18px;
+  border-radius: 20px;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(242,194,26,.13), transparent 72%);
+  opacity: 0;
+  transition: opacity .5s;
+}
+.panel-shell.glowing::after { opacity: 1; }
+
+/* 统一的口袋设备视觉：页面内容保持彩色，外层工具台只负责衬托 */
+.cradle { background: linear-gradient(180deg, #2a2e38, #171a20); }
+.head h1 { color: #f6d34b; }
+.head .spec b { color: #f6d34b; }
+
+#screen {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border-radius: 2px;
+  cursor: grab;
+  touch-action: none;
+}
+#screen:active { cursor: grabbing; }
+
+.dims {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  letter-spacing: .04em;
+  text-align: center;
+}
+.dims b { color: var(--live); font-weight: 500; }
+
+.hint {
+  margin-top: 20px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.hint span {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 3px 8px;
+  background: rgba(0,0,0,.25);
+}
+.hint span b { color: var(--ink); font-weight: 500; }
+
+/* ---------- 右侧控制台 ---------- */
+.rig { display: flex; flex-direction: column; gap: 22px; }
+
+.grp > h2 {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.pages { display: flex; flex-direction: column; gap: 3px; }
+.pg {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 7px 9px;
+  color: var(--ink-mid);
+  font-family: var(--cjk);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .14s, color .14s, border-color .14s;
+}
+.pg:hover { background: rgba(255,255,255,.035); color: var(--ink); }
+.pg .n {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-dim);
+  min-width: 12px;
+}
+.pg[aria-current="true"] {
+  background: rgba(242,194,26,.12);
+  border-color: var(--live-dim);
+  color: #fff;
+}
+.pg[aria-current="true"] .n { color: var(--live); }
+
+.vaxis {
+  margin-top: 9px;
+  font-size: 12px;
+  color: var(--ink-mid);
+  font-family: var(--cjk);
+  border-left: 2px solid var(--live-dim);
+  padding: 2px 0 2px 10px;
+  min-height: 34px;
+}
+.vaxis b { color: var(--ink); font-weight: 500; }
+.vaxis em { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
+
+/* 下拉 / 开关 / 分段按钮 */
+.rig select {
+  width: 100%;
+  background: var(--bench-hi);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  font-family: var(--cjk);
+  font-size: 12.5px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.rig select:focus { outline: 1px solid var(--live-dim); }
+
+.sw { display: flex; flex-direction: column; gap: 2px; }
+.sw label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 2px;
+  font-size: 12.5px;
+  color: var(--ink-mid);
+  cursor: pointer;
+  font-family: var(--cjk);
+}
+.sw label:hover { color: var(--ink); }
+.sw input { accent-color: var(--live); width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.sw .note { display: block; font-size: 11px; color: var(--ink-dim); margin: -3px 0 6px 23px; line-height: 1.4; }
+
+.seg { display: flex; border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+.seg button {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  color: var(--ink-mid);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 6px 0;
+  cursor: pointer;
+  transition: background .14s, color .14s;
+}
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: rgba(255,255,255,.04); color: var(--ink); }
+.seg button[aria-pressed="true"] { background: rgba(242,194,26,.18); color: #fff; }
+
+.actbtn {
+  width: 100%;
+  background: rgba(242,194,26,.10);
+  border: 1px solid var(--live-dim);
+  border-radius: 5px;
+  color: var(--live);
+  font-family: var(--cjk);
+  font-size: 12.5px;
+  padding: 7px 0;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.actbtn:hover { background: rgba(242,194,26,.18); }
+
+/* ---------- 保真度说明 ---------- */
+.fid {
+  margin-top: 40px;
+  border-top: 1px solid var(--rule);
+  padding-top: 22px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 22px 32px;
+}
+.fid h3 {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  font-family: var(--cjk);
+}
+.fid p { margin: 0; font-size: 12.5px; color: var(--ink-mid); font-family: var(--cjk); }
+.fid code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--live);
+  background: rgba(242,194,26,.10);
+  padding: .5px 4px;
+  border-radius: 3px;
+}
+.fid table { border-collapse: collapse; font-size: 11.5px; font-family: var(--cjk); color: var(--ink-mid); }
+.fid td { padding: 2px 10px 2px 0; }
+.fid td:first-child { color: var(--ink); white-space: nowrap; }
+.fid .warn h3 { color: #e8b04b; }
+</style>
+
+<div class="wrap">
+  <div class="head">
+    <h1>皮卡丘天气钟 · 5页面系统</h1>
+    <div class="spec">
+      ESP32-2432S028 · ILI9341 <b>320×240</b> · RGB565 <b>65K 色</b> · 网页预览版
+    </div>
+  </div>
+
+  <div class="stage">
+    <!-- 屏幕 -->
+    <div class="cradle">
+      <div class="panel-shell" id="shell">
+        <canvas id="screen" width="320" height="240"></canvas>
+      </div>
+      <div class="dims" id="dims">320 × 240 px · 显示比例 <b>3×</b></div>
+      <div class="hint">
+        <span><b>← →</b> 翻页</span>
+        <span><b>↑ ↓</b> 页内操作</span>
+        <span><b>拖动</b> 模拟触摸滑动</span>
+        <span><b>点按</b> 触发按钮</span>
+        <span><b>空格</b> 播放/暂停</span>
+        <span><b>Esc</b> 关弹窗</span>
+      </div>
+    </div>
+
+    <!-- 控制台 -->
+    <div class="rig">
+      <div class="grp">
+        <h2>Pages / 左右翻页</h2>
+        <div class="pages" id="pages"></div>
+        <div class="vaxis" id="vaxis"></div>
+      </div>
+
+      <div class="grp">
+        <h2>场景实验室 / 时钟页</h2>
+        <select id="wxOvr">
+          <option value="auto">天气跟随数据(自动)</option>
+          <option value="clear">晴(白天太阳/夜晚月亮)</option>
+          <option value="mostly">基本晴</option>
+          <option value="partly">少云</option>
+          <option value="overcast">阴(满天乌云)</option>
+          <option value="fog">雾</option>
+          <option value="drizzle">毛毛雨</option>
+          <option value="rain">雨</option>
+          <option value="heavyrain">大雨(带风)</option>
+          <option value="freezing">冻雨(结冰泛蓝)</option>
+          <option value="snow">雪(地面积雪)</option>
+          <option value="heavysnow">大雪</option>
+          <option value="thunder">雷暴(闪电)</option>
+        </select>
+        <select id="todOvr">
+          <option value="auto">时段跟随真实时间</option>
+          <option value="dawn">黎明(6:00 日出)</option>
+          <option value="day">白天(12:00 正午)</option>
+          <option value="dusk">黄昏(18:30 日落)</option>
+          <option value="night">夜晚(23:00 月亮星星)</option>
+        </select>
+        <span class="note" style="font-size:11px;color:var(--ink-dim);display:block;line-height:1.4">
+          时钟页的天空按「天气 × 时段」组合渲染:同一天气白天黑夜长得不一样,
+          晚上有月亮(月相随农历变化)和星星。点屏幕上的皮卡丘它会跳一下。
+        </span>
+      </div>
+
+      <div class="grp">
+        <h2>Network / 联网模拟</h2>
+        <div class="seg" id="netseg">
+          <button data-n="unconfig">未配网</button>
+          <button data-n="online" aria-pressed="true">在线</button>
+          <button data-n="offline">断网</button>
+        </div>
+        <div style="margin-top:10px">
+          <select id="srcsel">
+            <option value="demo">数据源:演示数据</option>
+            <option value="api">数据源:在线 API(open-meteo)</option>
+          </select>
+          <select id="citysel">
+            <option value="31.30,120.58">城市:苏州</option>
+            <option value="39.90,116.41">城市:北京</option>
+            <option value="31.23,121.47">城市:上海</option>
+            <option value="23.13,113.26">城市:广州</option>
+          </select>
+          <button class="actbtn" id="refetch">立即刷新天气</button>
+        </div>
+        <div class="vaxis" id="netinfo"></div>
+      </div>
+
+      <div class="grp">
+        <h2>State / 蓝牙与音乐</h2>
+        <div class="seg" id="btseg">
+          <button data-b="con" aria-pressed="true">已连接</button>
+          <button data-b="adv">广播中</button>
+          <button data-b="off">蓝牙关</button>
+        </div>
+        <div class="sw" style="margin-top:10px">
+          <label><input type="checkbox" id="playing" checked> 手机正在放歌</label>
+          <label><input type="checkbox" id="autopage" checked> 放歌时自动跳到音乐页</label>
+          <div class="vaxis" id="autoinfo"></div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <h2>Fidelity / 保真</h2>
+        <div class="sw">
+          <label><input type="checkbox" id="q565" checked> RGB565 量化</label>
+          <span class="note">把 24 位色截到面板真实的 5-6-5 位,渐变条带是真机会有的。</span>
+          <label><input type="checkbox" id="scanline"> 像素栅格</label>
+          <label><input type="checkbox" id="anim" checked> 动画 / 实时数据</label>
+          <label><input type="checkbox" id="hitbox"> 显示触摸热区</label>
+        </div>
+      </div>
+
+      <div class="grp">
+        <h2>Scale / 观看距离</h2>
+        <div class="seg" id="scale">
+          <button data-s="2">2×</button>
+          <button data-s="3" aria-pressed="true">3×</button>
+          <button data-s="4">4×</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fid">
+    <div>
+      <h3>颜色是真的</h3>
+      <p>调色板按 RGB565 跑了同一个 <code>rgb565()</code> 截断,所以黄色主色显示为 <code>#F2C218</code> —— 面板给红蓝各留 5 位。天气场景的天空渐变同样量化。</p>
+    </div>
+    <div>
+      <h3>天气场景覆盖是全的</h3>
+      <p>WMO 天气代码全部映射到 12 种场景 × 5 个时段(黎明/白天/黄昏/夜/深夜自动渐变):
+      晴、少云、阴、雾、毛毛雨、雨、大雨、冻雨、雪、大雪、雷暴。
+      晚上自动换成月亮(月相按农历日期画)和星星;雪天地面会积起来,雷暴有闪电,
+      风大时云走得快、雨丝是斜的。在右侧「场景实验室」逐个预览。</p>
+    </div>
+    <div>
+      <h3>农历是真的</h3>
+      <p>与参考固件同一张 <code>LUNAR_TAB</code> 位表、同一套节气偏移表,
+      日历页的农历/节日/节气、时钟页的月相都从它算出来。</p>
+    </div>
+    <div>
+      <h3>联网策略是真的</h3>
+      <p>模拟固件的策略:联网时一次拉 <b>7 天</b>预报缓存住,之后每 30 分钟
+      (预览压缩为 40 秒)刷新一次;断网继续用缓存并在页面上标注
+      「离线 · X分钟前更新」。控制台可切「未配网/在线/断网」验证。</p>
+    </div>
+    <div class="warn">
+      <h3>中文字会比真机好看</h3>
+      <p>浏览器是矢量字体;真机 u8g2 点阵笔画一像素粗、无抗锯齿,密笔画字会更糊。</p>
+    </div>
+    <div class="warn">
+      <h3>还有两件事看不出来</h3>
+      <p>刷新率 —— SPI 推满屏约 26fps,真机滚动没这么顺;可视角和对比度,IPS 侧看泛白。</p>
+    </div>
+    <div>
+      <h3>热区是量过的</h3>
+      <p>每个能点的东西画的时候登记自己的矩形,点按反查同一张表。勾「显示触摸热区」查看。2.8 寸约 143 PPI,1mm ≈ 5.6px。</p>
+    </div>
+    <div>
+      <h3>数据源可切真实 API</h3>
+      <p>控制台选「在线 API」会真调 <code>api.open-meteo.com</code> 拉 7 天预报
+      (浏览器直连,带 CORS)。失败自动回退演示数据。音乐页在网页里用模拟频谱,
+      真机走 BLE 收手机推的歌词和频谱,协议同参考项目 <code>META|LRC|SPEC</code>。</p>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   1. 调色板 —— 「口袋冒险」主题:米白纸面 + 皮卡丘黄主色 + 精灵球红
+      所有色值过一遍 rgb565 截断,和真机面板一致。
+   ===================================================================== */
+const q565 = h => {
+  const r = (h >> 16) & 0xFF, g = (h >> 8) & 0xFF, b = h & 0xFF;
+  const R = r & 0xF8, G = g & 0xFC, B = b & 0xF8;
+  return `rgb(${R | (R >> 5)},${G | (G >> 6)},${B | (B >> 5)})`;
+};
+const raw = h => `rgb(${(h>>16)&255},${(h>>8)&255},${h&255})`;
+
+const RGB = {
+  BG:0xF8F6EF, CARD:0xFFFFFF, CARD_HI:0xFDF3D2, RIM:0xE3DEC9, LINE:0xEEEADB,
+  ACCENT:0xF2C21A, GOLD_DK:0xF9E2A0,          /* 黄主色 / 黄浅调(槽底) */
+  RED:0xE4442E, RED_DK:0xF6D3C8,              /* 精灵球红(主按钮/强调) */
+  BLUE:0x2E7BC4, GREEN:0x4C9E42, AMBER:0xE8930C, PINK:0xF08CA8,
+  TXT_HI:0x2B2820, TXT:0x4D4940, TXT_MID:0x8F8B7C, TXT_LO:0xC0BBAA,
+};
+let TH = {};
+const buildTheme = quantize => {
+  const f = quantize ? q565 : raw;
+  for (const k in RGB) TH[k] = f(RGB[k]);
+};
+
+const mix = (a, b, t) => ({
+  r: ((a>>16)&255) + (((b>>16)&255) - ((a>>16)&255)) * t,
+  g: ((a>>8)&255)  + (((b>>8)&255)  - ((a>>8)&255))  * t,
+  b: (a&255)       + ((b&255)       - (a&255))       * t,
+});
+let QUANT = true;
+const css = o => {
+  let r = o.r|0, g = o.g|0, b = o.b|0;
+  if (QUANT) { r&=0xF8; g&=0xFC; b&=0xF8; r|=r>>5; g|=g>>6; b|=b>>5; }
+  return `rgb(${r},${g},${b})`;
+};
+const lerp = (a,b,t) => css(mix(a,b,Math.max(0,Math.min(1,t))));
+const dim   = (c,p) => lerp(RGB.BG, c, p);
+const grad  = (a,b,t) => lerp(a, b, t);          /* 数值渐变取样,命名避开 dim 重载 */
+const mixHex = (a, b, t) => {
+  const o = mix(a, b, t);
+  return ((o.r|0) << 16) | ((o.g|0) << 8) | (o.b|0);
+};
+const rgba = (r,g,b,a) => `rgba(${r|0},${g|0},${b|0},${a})`;
+
+/* =====================================================================
+   2. 画布 —— 严格 320×240,不做 DPR 缩放
+   ===================================================================== */
+const cv = document.getElementById('screen');
+const g  = cv.getContext('2d', { alpha: false });
+const W = 320, H = 240;
+
+/* 全部图形都在这份文件里画:没有外部图片,离线可用,
+   像素点阵可以原样搬进固件 Flash。 */
+
+const hline = (x, y, w, c) => { g.fillStyle = c; g.fillRect(x|0, y|0, w|0, 1); };
+const vline = (x, y, h, c) => { g.fillStyle = c; g.fillRect(x|0, y|0, 1, h|0); };
+const rect  = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(x|0, y|0, w|0, h|0); };
+const dot   = (cx, cy, r, c) => { g.beginPath(); g.arc(cx, cy, r, 0, 6.284); g.fillStyle = c; g.fill(); };
+
+const rrPath = (x, y, w, h, r) => {
+  r = Math.min(r, w/2, h/2);
+  g.beginPath();
+  g.moveTo(x+r, y);
+  g.arcTo(x+w, y,   x+w, y+h, r);
+  g.arcTo(x+w, y+h, x,   y+h, r);
+  g.arcTo(x,   y+h, x,   y,   r);
+  g.arcTo(x,   y,   x+w, y,   r);
+  g.closePath();
+};
+
+const toCss = c => typeof c === 'number' ? dim(c, 1) : c;
+
+const card = (x, y, w, h, r = 6, fill = TH.CARD, rim = TH.RIM) => {
+  if (fill) { rrPath(x, y, w, h, r); g.fillStyle = toCss(fill); g.fill(); }
+  if (rim)  { rrPath(x+.5, y+.5, w-1, h-1, r); g.strokeStyle = toCss(rim); g.lineWidth = 1; g.stroke(); }
+};
+
+const cardGrad = (x, y, w, h, r, cTop, cBot, rim) => {
+  g.save();
+  rrPath(x, y, w, h, r); g.clip();
+  for (let i = 0; i < h; i++) rect(x, y+i, w, 1, lerp(cTop, cBot, i/(h-1)));
+  g.restore();
+  if (rim) { rrPath(x+.5, y+.5, w-1, h-1, r); g.strokeStyle = toCss(rim); g.lineWidth = 1; g.stroke(); }
+};
+
+const divider = (x, y, w, c = RGB.RIM) => {
+  const fade = Math.min(28, w/3);
+  for (let i = 0; i < w; i++) {
+    let a = 1;
+    if (i < fade) a = i/fade;
+    else if (i > w-1-fade) a = (w-1-i)/fade;
+    rect(x+i, y, 1, 1, dim(c, a));
+  }
+};
+
+const arcAngle = deg => (deg - 180) * Math.PI / 180 - Math.PI / 2;
+const arc = (cx, cy, rOut, rIn, from, to, c, capRound = true) => {
+  g.beginPath();
+  g.arc(cx, cy, (rOut+rIn)/2, arcAngle(from), arcAngle(to), false);
+  g.strokeStyle = toCss(c);
+  g.lineWidth = rOut - rIn;
+  g.lineCap = capRound ? 'round' : 'butt';
+  g.stroke();
+  g.lineCap = 'butt';
+};
+
+const glowRing = (cx, cy, r, c, layers = 5) => {
+  for (let i = layers; i >= 1; i--)
+    arc(cx, cy, r+i*2, r+i*2-2, 0, 359.9, dim(c, .1 * (1 - i/(layers+1))), false);
+};
+const glowRect = (x, y, w, h, r, c, layers = 4) => {
+  g.lineWidth = 1;
+  for (let i = layers; i >= 1; i--) {
+    g.strokeStyle = dim(c, .13 * (1 - i/(layers+1)));
+    rrPath(x-i, y-i, w+i*2, h+i*2, r+i);
+    g.stroke();
+  }
+};
+
+/* ---- 文字 ---- */
+const CJK  = '"Noto Sans SC","Microsoft YaHei","PingFang SC",sans-serif';
+const MONO = '"IBM Plex Mono",Consolas,ui-monospace,monospace';
+const FONT = {
+  CN10:  '10px ' + CJK,
+  CN12:  '12px ' + CJK,
+  CN16:  '15px ' + CJK,
+  NUM14: '500 13px ' + MONO,
+  NUM22: '500 20px ' + MONO,
+  BIG40: '600 38px ' + MONO,
+};
+const txt = (s, x, y, c, f = FONT.CN12, align = 'left') => {
+  g.font = f; g.fillStyle = c; g.textAlign = align; g.textBaseline = 'alphabetic';
+  g.fillText(s, x|0, y|0);
+};
+const txtW = (s, f = FONT.CN12) => { g.font = f; return g.measureText(s).width; };
+const txtClip = (s, x, y, maxW, c, f = FONT.CN12, align = 'left') => {
+  g.font = f;
+  if (g.measureText(s).width <= maxW) { txt(s, x, y, c, f, align); return; }
+  let out = s;
+  while (out.length > 1 && g.measureText(out + '…').width > maxW) out = out.slice(0, -1);
+  txt(out + '…', x, y, c, f, align);
+};
+/* 白字带阴影:时钟页叠在天空上用 */
+const txtShadow = (s, x, y, c, f, align = 'left') => {
+  g.font = f; g.textAlign = align; g.textBaseline = 'alphabetic';
+  g.fillStyle = 'rgba(20,16,8,.45)';
+  g.fillText(s, (x|0)+1, (y|0)+1);
+  g.fillStyle = c;
+  g.fillText(s, x|0, y|0);
+};
+
+/* =====================================================================
+   3. 像素精灵引擎 —— 字符画定义,每字符一个调色板索引
+   ===================================================================== */
+const SPR_PAL = {
+  Y: '#F8D030',   /* 皮卡丘黄(已对齐 RGB565) */
+  L: '#FCE890',   /* 高光黄 */
+  D: '#D69A10',   /* 暗黄(脚掌/阴影) */
+  K: '#282010',   /* 黑(耳尖/眼/鼻/嘴) */
+  R: '#E84028',   /* 脸颊红 */
+  W: '#F8F8F0',   /* 眼白 */
+  B: '#8C602C',   /* 棕(尾根/背纹) */
+};
+const drawSprite = (rows, x, y, scale = 2) => {
+  for (let ry = 0; ry < rows.length; ry++) {
+    const line = rows[ry];
+    for (let rx = 0; rx < line.length; rx++) {
+      const c = SPR_PAL[line[rx]];
+      if (c) rect(x + rx*scale, y + ry*scale, scale, scale, c);
+    }
+  }
+};
+const spriteW = rows => rows[0].length;
+
+/* ---- 身体+头+耳(24×20,朝右,耳朵向后上方掠) ---- */
+const PK_BODY = [
+  '.........KK...KK........',   /* 耳尖 */
+  '.........KK...KK........',
+  '.........KK...KK........',
+  '.........YY...YY........',   /* 耳杆 */
+  '..........YY...YY.......',
+  '..........YYYYYYY.......',   /* 头顶 */
+  '.........YYYYYYYYYY.....',
+  '........YYYYYYYYYYYY....',
+  '.......YYYYYYYYKKYYYY...',   /* 眼 */
+  '......YYYYYYYYYKWYYYY...',
+  '.....YYYYYYYYYYYYYYYYK..',   /* 鼻尖 */
+  '...YYYYYYYYYYRRRYYYYKK..',   /* 脸颊 + 嘴 */
+  '..YYYYYYYYYYYRRRYYYYY...',
+  '.BBYYYYYYYYYYYYYYYYYY...',   /* 背纹 1 */
+  'BBBYYYYYYYYYYYYYYYYY....',   /* 背纹 2 */
+  '.YYYYYYYYYYYYYYYYYYY....',
+  '.YYYYYYYYYYYYYYYYYY.....',
+  '..YYYYYYYYYYYYYYYY......',
+  '...YYYYYYYYYYYYYY.......',   /* 肚 */
+  '.....YYYYYYYYYY.........',
+];
+
+/* ---- 闪电尾巴(11×12,右下棕块是尾根,挂在臀部) ---- */
+const PK_TAIL = [
+  '..YYYYYY...',
+  '..YYYYYY...',
+  '..YYYYY....',
+  '...YYY.....',
+  '..YYY......',
+  '..YYY......',
+  '...YYY.....',
+  '....YYY....',
+  '.....YYY...',
+  '......YYY..',
+  '.......BB..',
+  '........B..',
+];
+
+/* ---- 腿(24×4,4 帧奔跑循环:伸展 / 收腿腾空 / 交叉 / 收腿反相) ---- */
+const PK_LEGS = [
+  [ /* f0 全步幅:前爪前探、后爪后蹬,双脚触地 */
+    '.....YYY.....YYY........',
+    '....YYY.......YYY.......',
+    '...YYY.........YYY......',
+    '..DDDD.........DDDD.....',
+  ],
+  [ /* f1 收腿腾空(身体抬高 1 精灵px) */
+    '......YYY..YYY..........',
+    '......YYY..YYY..........',
+    '.....DDDD..DDDD.........',
+    '........................',
+  ],
+  [ /* f2 交叉:两腿剪刀交错 */
+    '.......YYY.YYY..........',
+    '......YYY...YYY.........',
+    '.....YYY.....YYY........',
+    '....DDDD.....DDDD.......',
+  ],
+  [ /* f3 收腿(另一相位) */
+    '.......YYY..YYY.........',
+    '.......YYY..YYY.........',
+    '......DDDD..DDDD........',
+    '........................',
+  ],
+];
+
+/* ---- 前爪(5×2,收在胸前,随步频前后摆) ---- */
+const PK_ARMS = [
+  ['..YYY', '.YYDD'],
+  ['.YYY.', '.YDD.'],
+  ['YYY..', 'YDD..'],
+  ['.YYY.', '.YDD.'],
+];
+
+/* 皮卡丘固定在屏幕正中原地跑:腿在倒 + 地面/草丛向左滚,读起来就是一直向前跑。
+   踩地帧扬尘,点它会原地跳一下。
+   x = 身体左边缘;y = 身体顶边;frame: 0-3 跑动帧;jumpT: 0-1 跳跃相位(null=没跳) */
+const PK_SC = 2;                          /* 2 屏幕像素 / 精灵像素 */
+const PK_W = spriteW(PK_BODY) * PK_SC;    /* 上屏 48px 宽 */
+const PK_H = 23;                          /* 身体顶 → 脚底(精灵像素) */
+const PK_SPD = 46;                        /* 步频基准(地面滚动速度也用它) */
+const PK_X = ((W - PK_W) / 2) | 0;        /* 屏幕正中 */
+/* 脚底落在地平线上:horizon 在下面第 7 节定义,这里只做算式 */
+const pkGroundY = () => horizon + 4 - PK_H * PK_SC;
+const drawPikachu = (x, y, frame, jumpT) => {
+  const f = frame & 3;
+  const bob = (f === 1 || f === 3) ? -1 * PK_SC : 0;      /* 腾空帧抬高 */
+  const jy = (jumpT === null || jumpT === undefined) ? 0 : -Math.sin(Math.PI * jumpT) * 26;
+  const bx = x, by = y + bob + jy;
+
+  /* 落地影子:跳起时缩小变淡 */
+  const lift = -jy;
+  g.globalAlpha = .3 * Math.max(.25, 1 - lift / 30);
+  g.fillStyle = '#141C08';
+  g.beginPath();
+  g.ellipse(bx + PK_W/2, y + 22*PK_SC + 3, PK_W*.42 * Math.max(.5, 1 - lift/40), 3, 0, 0, 6.284);
+  g.fill();
+  g.globalAlpha = 1;
+
+  /* 尾 → 身体 → 腿 → 前爪(顺序决定遮挡) */
+  drawSprite(PK_TAIL,     bx - 9*PK_SC,  by + 5*PK_SC,  PK_SC);
+  drawSprite(PK_BODY,     bx,            by,            PK_SC);
+  drawSprite(PK_LEGS[f],  bx,            by + 19*PK_SC, PK_SC);
+  drawSprite(PK_ARMS[f],  bx + 13*PK_SC, by + 16*PK_SC, PK_SC);
+
+  /* 踩地扬尘:落地帧在后脚位置补粒子,画在身体后面(左侧) */
+  if (jy === 0 && (f === 0 || f === 2) && DUST.length < 12 && Math.random() < .5)
+    DUST.push({ x: bx + 5, y: y + PK_H*PK_SC - 1, vx: -16 - Math.random()*14, vy: -5 - Math.random()*8, life: 1 });
+  return bx;
+};
+
+/* 扬尘推进 + 绘制(在皮卡丘之前调用,尘在身后) */
+const tickDust = (step, col) => {
+  for (let i = DUST.length - 1; i >= 0; i--) {
+    const d = DUST[i];
+    d.life -= .028 * step;
+    if (d.life <= 0) { DUST.splice(i, 1); continue; }
+    d.x += d.vx / 60 * step; d.y += d.vy / 60 * step; d.vy += .18 * step;
+    g.globalAlpha = d.life * .5;
+    const s = d.life > .6 ? 2 : 1;
+    rect(d.x, d.y, s, s, col);
+    g.globalAlpha = 1;
+  }
+};
+/* =====================================================================
+   4. 农历 —— 与参考固件 lunar.cpp 同一张位表(2020-2049)
+   ===================================================================== */
+const LUNAR_TAB = [
+  0x07954,0x06aa0,0x0ad50,0x05b52,0x04b60,0x0a6e6,0x0a4e0,0x0d260,
+  0x0ea65,0x0d530,0x05aa0,0x076a3,0x096d0,0x04afb,0x04ad0,0x0a4d0,
+  0x1d0b6,0x0d250,0x0d520,0x0dd45,0x0b5a0,0x056d0,0x055b2,0x049b0,
+  0x0a577,0x0a4b0,0x0aa50,0x1b255,0x06d40,0x0ada0,
+];
+const L_MIN = 2020;
+const leapMonth = y => LUNAR_TAB[y-L_MIN] & 0xF;
+const leapDays  = y => leapMonth(y) ? ((LUNAR_TAB[y-L_MIN] & 0x10000) ? 30 : 29) : 0;
+const monthDays = (y, m) => (LUNAR_TAB[y-L_MIN] & (0x10000 >> m)) ? 30 : 29;
+const yearDays  = y => { let n = leapDays(y); for (let m=1;m<=12;m++) n += monthDays(y,m); return n; };
+
+const daysFromCivil = (y, m, d) => {
+  y -= m <= 2;
+  const era = Math.floor(y/400), yoe = y - era*400;
+  const doy = Math.floor((153*(m + (m>2 ? -3 : 9)) + 2)/5) + d - 1;
+  const doe = yoe*365 + Math.floor(yoe/4) - Math.floor(yoe/100) + doy;
+  return era*146097 + doe - 719468;
+};
+const BASE = daysFromCivil(2020, 1, 25);   /* 2020 正月初一 */
+
+const solarToLunar = (y, m, d) => {
+  let off = daysFromCivil(y, m, d) - BASE;
+  if (off < 0) return null;
+  let ly = L_MIN;
+  while (ly < L_MIN + LUNAR_TAB.length && off >= yearDays(ly)) { off -= yearDays(ly); ly++; }
+  if (ly >= L_MIN + LUNAR_TAB.length) return null;
+  const lp = leapMonth(ly);
+  let lm = 1, leap = false;
+  while (lm <= 12) {
+    let len;
+    if (leap) len = leapDays(ly);
+    else      len = monthDays(ly, lm);
+    if (off < len) break;
+    off -= len;
+    if (!leap && lm === lp) leap = true; else { leap = false; lm++; }
+  }
+  return { y: ly, m: lm, d: off + 1, leap };
+};
+
+const LMON = ['','正','二','三','四','五','六','七','八','九','十','冬','腊'];
+const DIG  = ['','一','二','三','四','五','六','七','八','九','十'];
+const STEM   = '甲乙丙丁戊己庚辛壬癸';
+const BRANCH = '子丑寅卯辰巳午未申酉戌亥';
+const ZODIAC = '鼠牛虎兔龙蛇马羊猴鸡狗猪';
+const WEEK   = ['周日','周一','周二','周三','周四','周五','周六'];
+const dayName = d => d === 10 ? '初十' : d === 20 ? '二十' : d === 30 ? '三十'
+  : d < 11 ? '初'+DIG[d] : d < 20 ? '十'+DIG[d%10] : '廿'+DIG[d-20];
+const lunarText = l => l ? (l.leap?'闰':'') + LMON[l.m] + '月' + dayName(l.d) : '--';
+const stemBranch = ly => STEM[(ly-4)%10] + BRANCH[(ly-4)%12] + '年';
+const zodiacOf   = ly => ZODIAC[(ly-4)%12];
+
+/* 24 节气 */
+const TERM_OFF = [
+  0,21208,42467,63836,85337,107014,128867,150921,
+  173149,195551,218072,240693,263343,285989,308563,331033,
+  353350,375494,397447,419210,440795,462224,483532,504758,
+];
+const TERM_NAME = ['小寒','大寒','立春','雨水','惊蛰','春分','清明','谷雨',
+  '立夏','小满','芒种','夏至','小暑','大暑','立秋','处暑',
+  '白露','秋分','寒露','霜降','立冬','小雪','大雪','冬至'];
+const MIN_PER_YEAR = 525948.766245;
+const termDay = (y, t) => {
+  const base = daysFromCivil(1900,1,6)*1440 + 125;
+  const minutes = base + MIN_PER_YEAR*(y-1900) + TERM_OFF[t];
+  const days = Math.floor(minutes/1440);
+  const mon = ((t/2)|0) + 1;
+  return days - daysFromCivil(y, mon, 1) + 1;
+};
+const termToday = (y, m, d) => {
+  for (const t of [(m-1)*2, (m-1)*2+1]) if (termDay(y, t) === d) return TERM_NAME[t];
+  return null;
+};
+const FEST_L = { '1-1':'春节','1-15':'元宵','2-2':'龙抬头','5-5':'端午','7-7':'七夕','8-15':'中秋','9-9':'重阳','12-8':'腊八' };
+const FEST_S = { '1-1':'元旦','2-14':'情人节','3-8':'妇女节','5-1':'劳动节','6-1':'儿童节','10-1':'国庆节','12-25':'圣诞节' };
+const festival = (y, m, d, l) => {
+  if (l) {
+    if (l.m === 12 && l.d === monthDays(l.y, 12)) return '除夕';
+    const f = FEST_L[`${l.m}-${l.d}`]; if (f && !l.leap) return f;
+  }
+  return FEST_S[`${m}-${d}`] || null;
+};
+
+/* =====================================================================
+   5. 天气:WMO 代码 → 文本 / 图标 / 场景组
+      覆盖 open-meteo 全部 WMO weather_code,不漏一种。
+   ===================================================================== */
+const WMO_TXT = {
+  0:'晴', 1:'基本晴', 2:'少云', 3:'阴',
+  45:'雾', 48:'雾凇',
+  51:'毛毛雨', 53:'毛毛雨', 55:'浓毛毛雨', 56:'冻毛毛雨', 57:'冻毛毛雨',
+  61:'小雨', 63:'中雨', 65:'大雨', 66:'冻雨', 67:'强冻雨',
+  71:'小雪', 73:'中雪', 75:'大雪', 77:'雪粒',
+  80:'小阵雨', 81:'阵雨', 82:'强阵雨', 85:'小阵雪', 86:'大阵雪',
+  95:'雷暴', 96:'雷暴冰雹', 99:'强雷暴',
+};
+/* 12 种场景组。先判冻雨/雷暴(代码区间交叠,顺序有讲究) */
+const wmoScene = w => {
+  if (w <= 0)  return 'clear';
+  if (w <= 1)  return 'mostly';
+  if (w === 2) return 'partly';
+  if (w === 3) return 'overcast';
+  if (w === 45 || w === 48) return 'fog';
+  if (w === 56 || w === 57 || w === 66 || w === 67) return 'freezing';
+  if (w >= 51 && w <= 55) return 'drizzle';
+  if (w === 65 || w === 82) return 'heavyrain';
+  if ((w >= 61 && w <= 63) || (w >= 80 && w <= 81)) return 'rain';
+  if (w === 77 || w === 71 || w === 73 || w === 85) return 'snow';
+  if (w === 75 || w === 86) return 'heavysnow';
+  if (w >= 95) return 'thunder';
+  return 'partly';
+};
+/* 场景参数:云量/云暗/雨强/雪强/雾/闪电/风 */
+const SCENE = {
+  clear:     { clouds:.06, dark:0,   rain:0,   snow:0,   fog:0,   bolt:0, wind:.25 },
+  mostly:    { clouds:.22, dark:0,   rain:0,   snow:0,   fog:0,   bolt:0, wind:.3  },
+  partly:    { clouds:.45, dark:.05, rain:0,   snow:0,   fog:0,   bolt:0, wind:.35 },
+  overcast:  { clouds:1,   dark:.35, rain:0,   snow:0,   fog:.12, bolt:0, wind:.45 },
+  fog:       { clouds:.5,  dark:.1,  rain:0,   snow:0,   fog:.9,  bolt:0, wind:.1  },
+  drizzle:   { clouds:.85, dark:.2,  rain:.25, snow:0,   fog:.15, bolt:0, wind:.3  },
+  rain:      { clouds:1,   dark:.3,  rain:.55, snow:0,   fog:.08, bolt:0, wind:.45 },
+  heavyrain: { clouds:1,   dark:.5,  rain:1,   snow:0,   fog:.06, bolt:0, wind:.8  },
+  freezing:  { clouds:.9,  dark:.25, rain:.4,  snow:0,   fog:.2,  bolt:0, wind:.4, ice:1 },
+  snow:      { clouds:.95, dark:.15, rain:0,   snow:.5,  fog:.08, bolt:0, wind:.25 },
+  heavysnow: { clouds:1,   dark:.3,  rain:0,   snow:1,   fog:.06, bolt:0, wind:.5  },
+  thunder:   { clouds:1,   dark:.65, rain:.8,  snow:0,   fog:.04, bolt:1, wind:.7  },
+};
+
+/* =====================================================================
+   6. 场景引擎 —— 天空随「时段×天气」变化
+   ===================================================================== */
+/* 时间关键帧:[小时, 天顶色, 地平色]。凌晨到深夜连续插值 */
+const SKY_KEYS = [
+  [ 0.0, 0x0A0E2A, 0x24325E],
+  [ 4.5, 0x141A3E, 0x3A4470],
+  [ 6.0, 0x3E4A8E, 0xC97A52],
+  [ 7.5, 0x5A8CD8, 0xF2C590],
+  [10.0, 0x4E9CE8, 0xB5DFF8],
+  [13.0, 0x4290E8, 0xBDE6FA],
+  [16.5, 0x5288D0, 0xE0CFA0],
+  [18.0, 0x54508E, 0xE88A54],
+  [19.5, 0x2B3268, 0x8A5468],
+  [21.0, 0x12162E, 0x2E3A62],
+  [24.0, 0x0A0E2A, 0x24325E],
+];
+const skyColors = h => {
+  let i = 0;
+  while (i < SKY_KEYS.length - 2 && SKY_KEYS[i+1][0] <= h) i++;
+  const a = SKY_KEYS[i], b = SKY_KEYS[i+1];
+  const t = Math.max(0, Math.min(1, (h - a[0]) / (b[0] - a[0])));
+  return { top: mixHex(a[1], b[1], t), bot: mixHex(a[2], b[2], t) };
+};
+/* 夜色浓度:0=白天 1=深夜 */
+const nightness = h => {
+  if (h >= 21 || h < 4.5) return 1;
+  if (h >= 4.5 && h < 7.5) return 1 - (h - 4.5) / 3;
+  if (h >= 7.5 && h < 16.5) return 0;
+  return (h - 16.5) / 4.5;
+};
+
+/* 星星:固定种子伪随机,夜里出现 */
+const mulberry32 = seed => () => {
+  seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+  let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+};
+const rng = mulberry32(7);
+const STARS = [];
+for (let i = 0; i < 26; i++) STARS.push({ x: 6 + rng()*308, y: 24 + rng()*92, s: rng() < .3 ? 2 : 1, ph: rng()*6.28 });
+
+/* ---- 天体位置:白天太阳 6→18 时从左到右走一道弧;夜晚月亮 18→6 ---- */
+const bodyPos = h => {
+  let p;
+  if (h >= 6 && h < 18) p = (h - 6) / 12;
+  else if (h >= 18)     p = (h - 18) / 12;
+  else                  p = (h + 6) / 12;
+  return { x: 36 + p * 248, y: 102 - Math.sin(Math.PI * Math.max(0, Math.min(1, p))) * 66, isSun: h >= 6 && h < 18 };
+};
+/* 月相:农历日期 → 0(朔)~1(望)~0 */
+const moonPhase = lunar => lunar ? ((lunar.d - 1) / 29.5) : .5;
+
+/* ---- 云:横向漂移,像素块造型 ---- */
+const CLOUD_SPR = [   /* 宽 26 高 8 的云,行 → 宽度表 */
+  [8, 10], [6, 14], [4, 18], [2, 22], [0, 24], [0, 24], [2, 22], [4, 20],
+];
+const drawCloud = (x, y, w, c, alpha = 1) => {
+  g.globalAlpha = alpha;
+  g.fillStyle = c;
+  for (let i = 0; i < CLOUD_SPR.length; i++) {
+    const [inset, span] = CLOUD_SPR[i];
+    const rw = Math.max(3, w * span / 24);
+    const rx = x + (w - rw) / 2 + inset * .5;
+    const rh = Math.max(2, w / 26);
+    const r = Math.min(rh * .55, rw / 2);
+    rrPath(rx, y + i * rh, rw, rh, r);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+};
+
+/* ---- 降水粒子池 ---- */
+const RAIN = [], SNOW = [];
+const rainInit = n => { RAIN.length = 0; for (let i = 0; i < n; i++) RAIN.push({ x: Math.random()*340 - 10, y: Math.random()*190, v: 260 + Math.random()*90 }); };
+const snowInit = n => { SNOW.length = 0; for (let i = 0; i < n; i++) SNOW.push({ x: Math.random()*340 - 10, y: Math.random()*190, v: 26 + Math.random()*20, ph: Math.random()*6.28, s: Math.random() < .4 ? 3 : 2 }); };
+
+/* ---- 闪电状态 ---- */
+const BOLT = { t: 0, next: 2.5, x: 150, seed: 0 };
+
+/* ---- 地面装饰(草丛/尘土) ---- */
+const TUFTS = [];
+for (let i = 0; i < 14; i++) TUFTS.push({ x: i * 24 + (rng()*14 - 7), h: 2 + Math.round(rng()*2) });
+const DUST = [];   /* 皮卡丘跑动扬尘 */
+
+/* =====================================================================
+   7. 场景渲染主函数
+      y0..y1 是场景区(时钟页 18..240)
+   ===================================================================== */
+let sceneClock = 0;   /* 场景累计时间(秒) */
+const horizon = 188;  /* 地平线 */
+
+const drawScene = (hourF, scen, night, opt = {}) => {
+  const p = SCENE[scen] || SCENE.partly;
+  const step = opt.anim === false ? 0 : 1;   /* 关动画时粒子冻结 */
+  /* -- 天空(含阴天/雾/雷暴调色) -- */
+  let { top, bot } = skyColors(hourF);
+  if (p.clouds >= 1 && p.dark > 0) { top = mixHex(top, 0x6E747C, p.dark * .6); bot = mixHex(bot, 0x8A9096, p.dark * .55); }
+  if (p.fog > .3)                  { top = mixHex(top, 0xB9B5A6, p.fog * .3);  bot = mixHex(bot, 0xC5C1B2, p.fog * .45); }
+  if (p.bolt)                      { top = mixHex(top, 0x23273A, .5); bot = mixHex(bot, 0x353A50, .5); }
+  if (p.ice)                       { top = mixHex(top, 0x8FB4D8, .25); bot = mixHex(bot, 0xB8D0E6, .3); }
+  const skyH = horizon - 18;
+  for (let i = 0; i < skyH; i += 2) rect(0, 18 + i, W, 2, lerp(top, bot, i / skyH));
+
+  /* -- 星星 -- */
+  if (night > .35) {
+    const sa = Math.pow(night, 1.4);
+    for (const s of STARS) {
+      const tw = .55 + .45 * Math.sin(sceneClock * (1.2 + s.s) + s.ph);
+      g.globalAlpha = sa * tw;
+      rect(s.x, s.y, s.s, s.s, '#F5F2E8');
+    }
+    g.globalAlpha = 1;
+  }
+
+  /* -- 太阳 / 月亮 -- */
+  const bp = bodyPos(hourF);
+  if (bp.isSun && night < .6) {
+    /* 太阳:光环 + 本体 + 光芒 */
+    const warm = hourF < 8 || hourF > 16.5;    /* 早晚的太阳偏橙 */
+    const core = warm ? 0xFFB53A : 0xFFDD46;
+    g.globalAlpha = .12 + night * .1;
+    dot(bp.x, bp.y, 20, lerp(core, 0xFFE89A, .5));
+    g.globalAlpha = .2;
+    dot(bp.x, bp.y, 14, lerp(core, 0xFFE89A, .4));
+    g.globalAlpha = 1;
+    dot(bp.x, bp.y, 9, lerp(core, 0xFFF0A0, .25));
+    if (p.clouds < .8) {    /* 云太多时太阳基本看不见,光芒就不画了 */
+      g.strokeStyle = dim(core, .75); g.lineWidth = 1.5; g.lineCap = 'round';
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4 + sceneClock * .1;
+        g.beginPath();
+        g.moveTo(bp.x + Math.cos(a) * 12, bp.y + Math.sin(a) * 12);
+        g.lineTo(bp.x + Math.cos(a) * 16, bp.y + Math.sin(a) * 16);
+        g.stroke();
+      }
+      g.lineCap = 'butt';
+    }
+  } else if (!bp.isSun && night > .4) {
+    /* 月亮:按农历算月相(朔→望→朔),阴影圆偏移遮出月牙 */
+    const ph = opt.moonPh === undefined ? .5 : opt.moonPh;
+    const r = 8;
+    g.globalAlpha = .1;
+    dot(bp.x, bp.y, r + 7, '#C8D4E8');
+    g.globalAlpha = 1;
+    dot(bp.x, bp.y, r, '#EEEDE0');
+    const illum = 1 - Math.abs(ph - .5) * 2;
+    const off = (ph < .5 ? -1 : 1) * (1 - illum) * 2.2 * r;
+    g.globalAlpha = .96;
+    dot(bp.x + off, bp.y, r - .5, lerp(top, 0x121A34, .8));
+    g.globalAlpha = 1;
+    dot(bp.x - 2, bp.y - 2, 1.4, '#D8D4C4');
+    dot(bp.x + 3, bp.y + 1, 1, '#D8D4C4');
+    dot(bp.x - 1, bp.y + 3, 1, '#D8D4C4');
+  }
+
+  /* -- 云:量由场景参数决定,速度随风 -- */
+  const cloudN = Math.max(0, Math.round(p.clouds * 6));
+  const cSpeed = (3 + p.wind * 16) * (opt.anim === false ? 0 : 1);
+  const cloudLight = lerp(0xFFFFFF, 0x5E646C, p.dark);
+  const cloudDark  = lerp(0xD9DCE2, 0x3A4048, Math.min(1, p.dark + .2));
+  for (let i = 0; i < cloudN; i++) {
+    const band = i % 3;
+    const baseX = ((i * 137.5) % 340) - 10;
+    const cx = ((baseX - sceneClock * cSpeed * (0.5 + band * .35)) % 340 + 340) % 340 - 10;
+    const cy = 52 + band * 26 + (i % 2) * 6;
+    const cw = 30 + (i % 3) * 14;
+    const c = band === 0 ? cloudDark : cloudLight;
+    drawCloud(cx, cy, cw, c, band === 0 ? .95 : .8);
+  }
+
+  /* -- 闪电 -- */
+  if (p.bolt) {
+    if (BOLT.t <= 0) {
+      BOLT.next -= 1/60 * step;
+      if (BOLT.next <= 0) { BOLT.t = .28; BOLT.x = 60 + Math.random() * 200; BOLT.seed = Math.random(); }
+    } else BOLT.t -= 1/60 * step;
+    if (BOLT.t > 0) {
+      const fl = Math.sin(BOLT.t / .28 * Math.PI);
+      g.globalAlpha = fl * .28;
+      rect(0, 18, W, horizon - 18, '#FFF6D0');
+      g.globalAlpha = 1;
+      if (BOLT.t > .16) {   /* 只在前半程画电弧 */
+        g.strokeStyle = '#FFF8C8'; g.lineWidth = 2; g.lineJoin = 'round';
+        g.beginPath();
+        let bx = BOLT.x, by = 66;
+        g.moveTo(bx, by);
+        for (let i = 1; i <= 5; i++) {
+          bx += (BOLT.seed > .5 ? 1 : -1) * (6 + ((BOLT.seed * 977) % 7)) * (i % 2 ? 1 : -1);
+          by += 20;
+          g.lineTo(bx, by);
+        }
+        g.stroke();
+        g.lineWidth = 1; g.lineJoin = 'miter';
+      }
+    }
+  }
+
+  /* -- 远山 -- */
+  const hillC  = lerp(mixHex(0x4E8230, 0x2E4A5E, night * .7), 0xE8E6DC, p.snow > 0 ? .75 : 0);
+  const hillC2 = lerp(mixHex(0x3E6A24, 0x22384C, night * .7), 0xD8D6CE, p.snow > 0 ? .75 : 0);
+  g.fillStyle = hillC2;
+  g.beginPath(); g.ellipse(70, horizon + 6, 120, 26, 0, Math.PI, 0); g.fill();
+  g.fillStyle = hillC;
+  g.beginPath(); g.ellipse(250, horizon + 10, 140, 30, 0, Math.PI, 0); g.fill();
+
+  /* -- 地面:草皮带 + 泥土;雪天覆盖积雪 -- */
+  const snowCover = p.snow > 0 ? Math.min(1, p.snow * 1.2) : 0;
+  let grassC = mixHex(0x5E9C3A, 0x24384E, night * .72);
+  let dirtC  = mixHex(0x8A6034, 0x2A2418, night * .6);
+  if (p.rain > 0) { grassC = mixHex(grassC, 0x3E7030, p.rain * .4); }
+  if (snowCover) { grassC = mixHex(grassC, 0xE8E6DC, snowCover * .85); dirtC = mixHex(dirtC, 0xC8CCD4, snowCover * .5); }
+  if (p.ice) { grassC = mixHex(grassC, 0xB8D0E6, .3); }
+  rect(0, horizon, W, 10, lerp(grassC, grassC, 0));
+  rect(0, horizon + 10, W, H - horizon - 10, dirtC);
+  rect(0, horizon, W, 2, lerp(mixHex(0x6EB044, 0x2E4458, night * .6), 0xF2F0E8, snowCover * .8));
+
+  /* -- 草丛(视差滚动:推进统一在 loop 里做,这里只画) -- */
+  for (const t of TUFTS) {
+    const sway = p.wind > .5 ? Math.sin(sceneClock * 6 + t.x * .3) * 1 : 0;
+    const tc = snowCover > .5 ? lerp(0xF2F0E8, 0xFFFFFF, .3) : lerp(mixHex(0x4E8A2E, 0x22362C, night * .7), 0xFFFFFF, snowCover);
+    g.fillStyle = tc;
+    rect(t.x, horizon + 4 + (t.x % 7), 2, t.h * 2, tc);
+    rect(t.x + 2 + sway, horizon + 3 + (t.x % 5), 2, t.h * 2 + 2, tc);
+    rect(t.x + 1 + sway * .5, horizon + 6 + (t.x % 11), 2, t.h * 2 - 2, tc);
+  }
+
+  /* -- 皮卡丘的扬尘(先画,尘落在它身后) -- */
+  if (opt.pika) tickDust(step, snowCover > .4 ? '#EAEAE2' : lerp(mixHex(0xB09068, 0x3A3226, night * .6), 0xFFFFFF, snowCover * .6));
+
+  /* -- 皮卡丘(位置由调用方传入) -- */
+  if (opt.pika) opt.pika();
+
+  /* -- 雨 -- */
+  if (p.rain > 0) {
+    if (RAIN.length === 0) rainInit(14);
+    const rc = lerp(mixHex(0x9CBEF0, 0x51648C, night), 0xD8E8F8, 0);
+    const slant = p.wind * 1.1;
+    g.strokeStyle = rc; g.lineWidth = 1; g.lineCap = 'round';
+    const want = Math.round(12 + p.rain * 70);
+    while (RAIN.length > want) RAIN.pop();
+    while (RAIN.length < want) RAIN.push({ x: Math.random()*340-10, y: 18+Math.random()*180, v: 260+Math.random()*90 });
+    for (const d of RAIN) {
+      d.y += d.v / 60 * step; d.x -= slant * 3 * step;
+      if (d.y > H + 8 || d.x < -10) { d.y = 14; d.x = Math.random() * 350 - 10; }
+      g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x - slant * 4, d.y - 7); g.stroke();
+    }
+    g.lineCap = 'butt';
+  } else RAIN.length = 0;
+
+  /* -- 雪 -- */
+  if (p.snow > 0) {
+    if (SNOW.length === 0) snowInit(14);
+    const want = Math.round(10 + p.snow * 46);
+    while (SNOW.length > want) SNOW.pop();
+    while (SNOW.length < want) SNOW.push({ x: Math.random()*340-10, y: 18+Math.random()*180, v: 26+Math.random()*20, ph: Math.random()*6.28, s: Math.random()<.4?3:2 });
+    for (const f of SNOW) {
+      f.y += f.v / 60 * step;
+      f.x += Math.sin(sceneClock * 1.5 + f.ph) * .5 * step - p.wind * .4 * step;
+      if (f.y > H + 4 || f.x < -6) { f.y = 14; f.x = Math.random() * 340 - 10; }
+      g.globalAlpha = .92;
+      rect(f.x, f.y, f.s, f.s, '#F6F4EC');
+      g.globalAlpha = 1;
+    }
+  } else SNOW.length = 0;
+
+  /* -- 雾:横带缓慢移动 -- */
+  if (p.fog > .05) {
+    for (let i = 0; i < 3; i++) {
+      const fy = 70 + i * 46;
+      const fx = ((sceneClock * (2 + i)) % 60) - 30;
+      g.globalAlpha = p.fog * .38;
+      g.fillStyle = '#C5C1B2';
+      g.beginPath();
+      g.ellipse(160 + Math.sin(sceneClock * .3 + i) * 40 + fx * .3, fy, 210, 13, 0, 0, 6.284);
+      g.fill();
+      g.globalAlpha = 1;
+    }
+  }
+
+  /* -- 冻雨:地面冰晶闪光 -- */
+  if (p.ice) {
+    for (let i = 0; i < 7; i++) {
+      const tw = Math.sin(sceneClock * 3 + i * 2.4);
+      if (tw > .3) {
+        g.globalAlpha = (tw - .3) * .8;
+        rect(20 + i * 42, horizon + 6 + (i % 3) * 8, 2, 2, '#EAF4FF');
+        g.globalAlpha = 1;
+      }
+    }
+  }
+};
+/* =====================================================================
+   8. 状态 + 模拟数据 —— 联网/断网/未配网、天气缓存、蓝牙音乐
+   ===================================================================== */
+const PAGES = [
+  { id:'clock',    name:'时钟', vlabel:'此页无竖向操作', vopts:['点皮卡丘会跳'] },
+  { id:'music',    name:'音乐', vlabel:'音波样式',   vopts:['放射条','环形波纹','光点绕圈'] },
+  { id:'weather',  name:'天气', vlabel:'视图切换',   vopts:['概览+七日','整页七日'] },
+  { id:'date',     name:'日期', vlabel:'切换月份',   vopts:['上下滑'] },
+  { id:'settings', name:'设置', vlabel:'移动选中',   vopts:[] },
+];
+const S = {
+  page: 0,
+  vsel: PAGES.map(() => 0),
+  btState: 'con',
+  get bt() { return this.btState === 'con'; },
+  btDev: 'Pixel 7',
+  anim: true,
+  monthOff: 0,
+  setSel: 0, setScroll: 0,
+  bright: 72,
+  wifiSsid: 'Pika-Home',
+  /* 网络:unconfig=没配过网 / online / offline(有缓存) */
+  net: 'online',
+  netSource: 'demo',          /* demo | api */
+  city: { name:'苏州', lat:31.30, lon:120.58 },
+  refetchBusy: false,
+  spec: new Array(16).fill(0),
+  peak: new Array(16).fill(0),
+  trackPos: 78,
+  playing: true,
+  autoPage: true,
+  idleT: 0, manualT: 0,
+  seek: null,
+  press: null,
+  modal: null,               /* {kind, sel, ssid, pass, kbShift, kbNum, scan, connT} */
+  toast: null, toastT: 0,
+  slide: 0,
+  pkJump: null,              /* 皮卡丘跳跃相位 0..1 */
+  pkFrame: 0,                /* 跑动帧 */
+  wxOvr: 'auto',             /* 场景实验室覆盖 */
+  todOvr: 'auto',
+};
+
+/* ---- 天气缓存:一次拉 7 天,断网沿用 ---- */
+const CITIES = {
+  '苏州': { lat:31.30, lon:120.58 }, '北京': { lat:39.90, lon:116.41 },
+  '上海': { lat:31.23, lon:121.47 }, '广州': { lat:23.13, lon:113.26 },
+};
+const makeDemoWeather = () => {
+  const wm = [0,1,2,2,3,61,80];
+  const d = new Date();
+  return {
+    fetchedAt: Date.now(),
+    city: S.city.name,
+    wmo: 2, temp: 26, feels: 28, hum: 64, wind: '东南 3 级',
+    hi: 31, lo: 23,
+    hours: (() => {
+      const out = [], h0 = d.getHours();
+      for (let i = 0; i < 6; i++) out.push({ t: i === 0 ? '现在' : `${(h0+i)%24}时`, wmo: i > 3 ? 3 : 2, temp: 26 + Math.round(Math.sin(i) * 3) });
+      return out;
+    })(),
+    days: (() => {
+      const out = [];
+      for (let i = 0; i < 7; i++) {
+        const dt = new Date(d.getTime() + i * 864e5);
+        out.push({ label: i === 0 ? '今天' : i === 1 ? '明天' : WEEK[dt.getDay()], wmo: wm[(i + d.getDate()) % wm.length], hi: 31 - i + ((i*7)%3), lo: 23 - (i%2) });
+      }
+      return out;
+    })(),
+  };
+};
+let WX = makeDemoWeather();
+
+/* 演示刷新:数据轻微漂移,像真的重新拉了一次 */
+const demoRefresh = () => {
+  WX.fetchedAt = Date.now();
+  WX.city = S.city.name;
+  const drift = [-1, 0, 0, 1, 2];
+  WX.wmo = [0,1,2,2,3,45,51,61,63,71,95][Math.floor(Math.random()*11)];
+  WX.temp = Math.max(-5, Math.min(38, WX.temp + drift[Math.floor(Math.random()*5)]));
+  WX.feels = WX.temp + 2;
+  WX.hum = 45 + Math.floor(Math.random() * 40);
+  WX.days = WX.days.map((dd, i) => ({ ...dd, wmo: [0,1,2,3,61,71,95,2][(i + Math.floor(Math.random()*3)) % 8], hi: dd.hi + (Math.random() > .5 ? 1 : -1) * (Math.random() > .7 ? 1 : 0), lo: dd.lo }));
+};
+/* open-meteo 真实拉取(浏览器直连,CORS 允许);失败保持缓存 */
+const apiRefresh = async () => {
+  if (S.refetchBusy) return;
+  S.refetchBusy = true;
+  try {
+    const u = `https://api.open-meteo.com/v1/forecast?latitude=${S.city.lat}&longitude=${S.city.lon}`
+      + `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m`
+      + `&hourly=temperature_2m,weather_code&forecast_hours=6`
+      + `&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=7&timezone=auto`;
+    const r = await fetch(u);
+    const j = await r.json();
+    const now = new Date();
+    WX = {
+      fetchedAt: Date.now(),
+      city: S.city.name,
+      wmo: j.current.weather_code,
+      temp: Math.round(j.current.temperature_2m),
+      feels: Math.round(j.current.apparent_temperature),
+      hum: j.current.relative_humidity_2m,
+      wind: `${Math.round(j.current.wind_speed_10m)} km/h`,
+      hi: Math.round(j.daily.temperature_2m_max[0]),
+      lo: Math.round(j.daily.temperature_2m_min[0]),
+      hours: j.hourly.time.map((t, i) => ({ t: i === 0 ? '现在' : `${+t.slice(11,13)}时`, wmo: j.hourly.weather_code[i], temp: Math.round(j.hourly.temperature_2m[i]) })),
+      days: j.daily.time.map((t, i) => {
+        const dt = new Date(t + 'T00:00');
+        return { label: i === 0 ? '今天' : i === 1 ? '明天' : WEEK[dt.getDay()], wmo: j.daily.weather_code[i], hi: Math.round(j.daily.temperature_2m_max[i]), lo: Math.round(j.daily.temperature_2m_min[i]) };
+      }),
+    };
+    toast(`天气已更新(${WX.city})`);
+  } catch (e) {
+    toast('拉取失败,继续用缓存');
+  }
+  S.refetchBusy = false;
+};
+
+/* ---- 刷新调度:在线每 40s(代表真机 30 分钟) ---- */
+const REFRESH_S = 40;
+let refreshT = 0;
+const tickNetwork = dt => {
+  if (S.net !== 'online') return;
+  refreshT -= dt;
+  if (refreshT <= 0) { refreshT = REFRESH_S; if (S.netSource === 'demo') demoRefresh(); else apiRefresh(); }
+};
+const forceRefresh = () => {
+  refreshT = REFRESH_S;
+  if (S.net !== 'online') { toast('未联网,用不了在线刷新'); return; }
+  if (S.netSource === 'demo') { demoRefresh(); toast('天气已更新(演示数据)'); }
+  else apiRefresh();
+};
+
+/* ---- 缓存时间文案 ---- */
+const cachedMin = () => Math.max(0, Math.round((Date.now() - WX.fetchedAt) / 60000));
+const netBadge = () => {
+  if (S.net === 'unconfig') return { text: '未配网 · 演示数据', c: TH.RED };
+  if (S.net === 'offline')  return { text: `离线 · ${cachedMin()}分钟前更新`, c: TH.AMBER };
+  return { text: `已更新 ${cachedMin()}分钟前`, c: TH.GREEN };
+};
+
+/* ---- 音乐演示数据(真机来自 BLE: META|LRC|SPEC) ---- */
+const song = { title:'夜曲', artist:'周杰伦 · 十一月的萧邦', dur:227,
+  lrc:['蝴蝶自在飞 像那破碎的过往','为你弹奏萧邦的夜曲','纪念我死去的爱情','而我为你隐姓埋名','在月光下弹琴'] };
+let specPhase = 0;
+const tickSpec = dt => {
+  specPhase += dt;
+  for (let i = 0; i < 16; i++) {
+    let v = 0;
+    if (S.bt && S.playing) {
+      const lowBias = Math.pow(1 - i/16, .75);
+      v = lowBias * (.45 + .55 * Math.abs(Math.sin(specPhase*2.4 + i*.7)
+            * Math.sin(specPhase*1.1 + i*.31) + Math.sin(specPhase*5.3 + i)*.25));
+      v = Math.max(0, Math.min(1, v));
+    }
+    S.spec[i] += (v - S.spec[i]) * (v > S.spec[i] ? .55 : .16);
+    S.peak[i] = Math.max(S.spec[i], S.peak[i] - dt*.42);
+  }
+};
+
+/* =====================================================================
+   9. 通用部件 —— 热区 / 状态条 / 页点 / 按钮 / toast / 图标
+   ===================================================================== */
+let HITS = [], hitOn = true;
+const hit = (id, x, y, w, h, opt) => {
+  if (hitOn) HITS.push({ id, x, y, w, h, focus: !!(opt && opt.focus) });
+};
+const hitAt = (x, y) => {
+  for (let i = HITS.length - 1; i >= 0; i--) {
+    const t = HITS[i];
+    if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) return t;
+  }
+  return null;
+};
+const inHit = (t, x, y) => !!t && x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h;
+
+const now = () => new Date();
+const pad = n => String(n).padStart(2, '0');
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+/* 状态条:light=true 用白字(时钟页叠天空上,先垫一条暗纱) */
+const statusBar = (t, right, light) => {
+  if (light) {
+    g.globalAlpha = .32;
+    rect(0, 0, W, 19, '#0E1430');
+    g.globalAlpha = 1;
+    txtShadow(t, 8, 13, '#F5F2E8', FONT.CN12);
+  } else {
+    txt(t, 8, 13, TH.TXT_MID, FONT.CN12);
+  }
+  let x = W - 8;
+  const wifiC = S.net === 'online' ? (light ? '#7BD06A' : TH.GREEN) : S.net === 'offline' ? TH.AMBER : TH.TXT_LO;
+  const btC = S.bt ? (light ? '#F2C21A' : TH.ACCENT) : TH.TXT_LO;
+  glyph('bt', x-13, 3, 13, btC);   x -= 18;
+  glyph('wifi', x-13, 3, 13, wifiC); x -= 18;
+  if (right) {
+    if (light) txtShadow(right, x, 13, '#D8D4C4', FONT.CN12, 'right');
+    else txt(right, x, 13, TH.TXT_MID, FONT.CN12, 'right');
+  }
+  if (!light) divider(0, 18, W, RGB.LINE);
+};
+
+/* 全页统一页脚:一条像素草地带 —— 把五个页面绑成一台设备的视觉签名。
+   时钟页自己有完整场景(草地是场景的一部分,皮卡丘也只在那一页跑),
+   其余四页画这条,只做风格统一,不放皮卡丘。 */
+const FOOT_H = 26;                       /* 页脚高度 */
+const FOOT_Y = H - FOOT_H;               /* 214 */
+const pageFooter = () => {
+  const gy = FOOT_Y + 8;                 /* 草皮顶边 */
+  /* 页面底色→草地的浅色过渡,避免硬切 */
+  for (let i = 0; i < 8; i++)
+    hline(0, FOOT_Y + i, W, lerp(RGB.BG, 0x8FC45E, i/7 * .5));
+  rect(0, gy, W, FOOT_H - 8, dim(0x7CB44E, 1));
+  hline(0, gy, W, dim(0x9AD066, 1));
+  /* 草丛(和时钟页同一套视差滚动,所以整机的地面是同一片) */
+  for (const t of TUFTS) {
+    const tc = dim(0x5E9C3A, 1);
+    rect(t.x, gy + 2 + (t.x % 4), 2, t.h * 2, tc);
+    rect(t.x + 2, gy + 1 + (t.x % 3), 2, t.h * 2 + 1, tc);
+  }
+};
+
+const dots = (cx, y, cur, light) => {
+  const n = PAGES.length, gap = 9, barW = 11, dotW = 4;
+  let total = 0;
+  for (let i = 0; i < n; i++) total += (i === cur ? barW : dotW) + (i ? gap : 0);
+  let x = cx - total/2;
+  for (let i = 0; i < n; i++) {
+    if (i) x += gap;
+    if (i === cur) {
+      /* 当前页:亮条 + 深色描边,压在草地/天空上都看得清 */
+      if (light) { rrPath(x-1, y-1, barW+2, 6, 3); g.fillStyle = 'rgba(20,30,10,.4)'; g.fill(); }
+      rrPath(x, y, barW, 4, 2); g.fillStyle = light ? '#FFE04A' : TH.ACCENT; g.fill();
+      x += barW;
+    } else {
+      if (light) { dot(x + 2, y + 2, 2.6, 'rgba(20,30,10,.4)'); dot(x + 2, y + 2, 2, '#FBF8EC'); }
+      else dot(x + 2, y + 2, 2, TH.TXT_LO);
+      x += dotW;
+    }
+  }
+};
+
+const textBtn = (id, x, y, w, h, label, c = RGB.ACCENT, focused = false) => {
+  hit(id, x, y, w, h, { focus: true });
+  const down = S.press === id;
+  if (down)         cardGrad(x, y, w, h, 7, mixHex(RGB.CARD_HI, c, .35), RGB.CARD_HI, c);
+  else if (focused) card(x, y, w, h, 7, TH.CARD_HI, toCss(c));
+  else              card(x, y, w, h, 7, TH.CARD, TH.RIM);
+  txt(label, x + w/2, y + h/2 + 5, down ? TH.TXT_HI : toCss(c), FONT.CN12, 'center');
+};
+
+const toast = msg => { S.toast = msg; S.toastT = 1.4; };
+const drawToast = () => {
+  if (!S.toast || S.toastT <= 0) return;
+  const a = Math.min(1, S.toastT / .35);
+  const w = Math.max(80, txtW(S.toast, FONT.CN12) + 26), x = (W - w)/2, y = 196;
+  g.globalAlpha = a;
+  cardGrad(x, y, w, 24, 12, RGB.RED_DK, RGB.CARD, RGB.RED);
+  txt(S.toast, W/2, y + 16, TH.TXT_HI, FONT.CN12, 'center');
+  g.globalAlpha = 1;
+};
+
+/* ---- 矢量小图标 ---- */
+const glyph = (k, x, y, s, c) => {
+  g.strokeStyle = c; g.fillStyle = c; g.lineWidth = Math.max(1, s/10);
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  const tri = (px, py, w, h) => { g.beginPath(); g.moveTo(px,py); g.lineTo(px+w,py+h/2); g.lineTo(px,py+h); g.closePath(); g.fill(); };
+  switch (k) {
+    case 'play':  tri(x+s*.28, y+s*.18, s*.5, s*.64); break;
+    case 'pause': rect(x+s*.28, y+s*.18, s*.14, s*.64, c); rect(x+s*.56, y+s*.18, s*.14, s*.64, c); break;
+    case 'next':  tri(x+s*.18, y+s*.22, s*.4, s*.56); rect(x+s*.64, y+s*.22, s*.12, s*.56, c); break;
+    case 'prev':
+      g.save(); g.translate(x + s, 0); g.scale(-1, 1);
+      tri(s*.18, y+s*.22, s*.4, s*.56); rect(s*.64, y+s*.22, s*.12, s*.56, c);
+      g.restore(); break;
+    case 'bt': {
+      const cx0 = x+s*.5, t0 = y+s*.14, b0 = y+s*.86;
+      g.beginPath();
+      g.moveTo(cx0, t0); g.lineTo(cx0, b0);
+      g.moveTo(x+s*.26, y+s*.34); g.lineTo(cx0+s*.2, y+s*.66); g.lineTo(cx0, b0-s*.04);
+      g.moveTo(x+s*.26, y+s*.66); g.lineTo(cx0+s*.2, y+s*.34); g.lineTo(cx0, t0+s*.04);
+      g.stroke(); break;
+    }
+    case 'wifi': {
+      const cx0 = x+s*.5, cy0 = y+s*.78;
+      for (let i = 0; i < 3; i++) arc(cx0, cy0, s*(.26+i*.22)+1, s*(.26+i*.22)-.5, 130, 230, c, false);
+      dot(cx0, cy0, Math.max(1, s*.07), c); break;
+    }
+    case 'lock': {   /* 密码锁 */
+      const cx0 = x+s*.5;
+      g.beginPath(); g.arc(cx0, y+s*.38, s*.24, Math.PI, 0); g.stroke();
+      rrPath(x+s*.2, y+s*.38, s*.6, s*.46, s*.1); g.fill(); break;
+    }
+    case 'note':
+      dot(x+s*.34, y+s*.72, s*.16, c);
+      rect(x+s*.47, y+s*.2, Math.max(1,s*.09), s*.55, c);
+      g.beginPath(); g.moveTo(x+s*.52, y+s*.2); g.lineTo(x+s*.8, y+s*.12);
+      g.lineTo(x+s*.8, y+s*.3); g.lineTo(x+s*.52, y+s*.38); g.closePath(); g.fill(); break;
+    case 'gear': {
+      const cx0=x+s*.5, cy0=y+s*.5;
+      for (let i=0;i<8;i++){ const a=i*Math.PI/4;
+        g.beginPath(); g.moveTo(cx0+Math.cos(a)*s*.26, cy0+Math.sin(a)*s*.26);
+        g.lineTo(cx0+Math.cos(a)*s*.42, cy0+Math.sin(a)*s*.42); g.stroke(); }
+      g.beginPath(); g.arc(cx0,cy0,s*.2,0,6.284); g.stroke(); break;
+    }
+  }
+  g.lineJoin = 'miter'; g.lineCap = 'butt';
+};
+
+/* ---- 天气图标:12 场景组全画得出 ---- */
+const wxIcon = (k, x, y, s) => {
+  const sun = (cx, cy, r, rays) => {
+    glowRing(cx, cy, r, RGB.AMBER, 3);
+    dot(cx, cy, r, TH.AMBER);
+    if (rays) { g.strokeStyle = dim(RGB.AMBER,.8); g.lineWidth = Math.max(1,s/16);
+      for (let i=0;i<8;i++){ const a=i*Math.PI/4;
+        g.beginPath(); g.moveTo(cx+Math.cos(a)*(r+s*.1), cy+Math.sin(a)*(r+s*.1));
+        g.lineTo(cx+Math.cos(a)*(r+s*.22), cy+Math.sin(a)*(r+s*.22)); g.stroke(); } }
+  };
+  const cloud = (cx, cy, w, c) => {
+    const r1=w*.26, r2=w*.2, r3=w*.22;
+    g.fillStyle = c;
+    dot(cx-w*.2, cy, r2, c); dot(cx+w*.02, cy-w*.1, r1, c); dot(cx+w*.24, cy, r3, c);
+    rect(cx-w*.2-r2, cy, w*.46+r2+r3, r3, c);
+  };
+  const drops = (n, y0) => {
+    g.strokeStyle = TH.BLUE; g.lineWidth = Math.max(1,s/14); g.lineCap='round';
+    for (let i=0;i<n;i++){ const px=x+s*(.34+i*.16);
+      g.beginPath(); g.moveTo(px, y0); g.lineTo(px-s*.05, y0+s*.2); g.stroke(); }
+    g.lineCap='butt';
+  };
+  switch (k) {
+    case 'clear':    sun(x+s/2, y+s/2, s*.24, true); break;
+    case 'mostly':
+    case 'partly':   sun(x+s*.62, y+s*.36, s*.17, true); cloud(x+s*.44, y+s*.6, s*.6, TH.TXT_MID); break;
+    case 'overcast': cloud(x+s*.5, y+s*.42, s*.62, TH.TXT_MID); cloud(x+s*.52, y+s*.62, s*.56, TH.TXT_LO); break;
+    case 'fog':      cloud(x+s*.5, y+s*.34, s*.6, TH.TXT_LO);
+      for (let i=0;i<3;i++) rect(x+s*.22+(i%2)*s*.08, y+s*.62+i*s*.12, s*.5, 1, dim(RGB.TXT_MID,.7)); break;
+    case 'drizzle':  cloud(x+s*.5, y+s*.36, s*.6, TH.TXT_MID); drops(2, y+s*.64); break;
+    case 'rain':     cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID); drops(3, y+s*.66); break;
+    case 'heavyrain':cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID); drops(3, y+s*.62);
+      g.strokeStyle = TH.BLUE; g.lineWidth = Math.max(1,s/14);
+      for (let i=0;i<3;i++){ const px=x+s*(.26+i*.24);
+        g.beginPath(); g.moveTo(px, y+s*.6); g.lineTo(px-s*.08, y+s*.94); g.stroke(); } break;
+    case 'freezing': cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID); drops(3, y+s*.66);
+      for (let i=0;i<2;i++) dot(x+s*(.3+i*.4), y+s*.92, Math.max(1,s*.05), TH.BLUE); break;
+    case 'snow':     cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID);
+      for (let i=0;i<3;i++) dot(x+s*(.32+i*.18), y+s*.76, Math.max(1,s*.05), TH.TXT); break;
+    case 'heavysnow':cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID);
+      for (let i=0;i<3;i++) dot(x+s*(.32+i*.18), y+s*.74, Math.max(1,s*.06), TH.TXT); break;
+    case 'thunder':  cloud(x+s*.5, y+s*.4, s*.62, TH.TXT_MID);
+      g.fillStyle = TH.AMBER; g.beginPath();
+      g.moveTo(x+s*.52, y+s*.6); g.lineTo(x+s*.4, y+s*.8); g.lineTo(x+s*.5, y+s*.8);
+      g.lineTo(x+s*.42, y+s*.96); g.lineTo(x+s*.64, y+s*.72); g.lineTo(x+s*.52, y+s*.72);
+      g.closePath(); g.fill(); break;
+    default:         cloud(x+s*.5, y+s*.5, s*.6, TH.TXT_LO);
+  }
+};
+const sceneToIcon = scen => scen === 'clear' || scen === 'mostly' ? 'clear' : scen === 'partly' ? 'partly' : scen;
+/* =====================================================================
+   10. 页面渲染
+   ===================================================================== */
+const sceneHour = () => {
+  if (S.todOvr !== 'auto') return { dawn:6.1, day:12, dusk:18.4, night:23 }[S.todOvr];
+  const d = now();
+  return d.getHours() + d.getMinutes()/60;
+};
+
+/* ---------- 页 1:皮卡丘天气时钟 ----------
+   状态条(白字叠暗纱) + 大时间 + 天气 chip(点击跳天气页)
+   其余全部是场景:天空(时段×天气) + 天体 + 云 + 降水 + 远山 + 草地 + 皮卡丘 */
+function pageClock() {
+  const d = now();
+  const l = solarToLunar(d.getFullYear(), d.getMonth()+1, d.getDate());
+  const fest = festival(d.getFullYear(), d.getMonth()+1, d.getDate(), l)
+            || termToday(d.getFullYear(), d.getMonth()+1, d.getDate()) || '';
+  statusBar(`${d.getMonth()+1}月${d.getDate()}日 ${WEEK[d.getDay()]}`, fest, true);
+
+  const scen = S.wxOvr === 'auto' ? wmoScene(WX.wmo) : S.wxOvr;
+  const hF = sceneHour();
+  drawScene(hF, scen, nightness(hF), {
+    anim: S.anim,
+    moonPh: moonPhase(l),
+    pika: () => {
+      const gy = pkGroundY();
+      drawPikachu(PK_X, gy, S.pkFrame, S.pkJump);
+      /* 它固定在中间,热区也固定,四周放宽好点中 */
+      hit('c.pika', PK_X - 16, gy - 34, PK_W + 32, PK_H * PK_SC + 46);
+    },
+  });
+
+  /* 大时间 + 农历 */
+  const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  txtShadow(hhmm, 12, 62, '#FDF9EC', FONT.BIG40);
+  txtShadow(`${lunarText(l)} · ${zodiacOf(l ? l.y : d.getFullYear())}年`, 14, 82, '#F0EAD0', FONT.CN12);
+
+  /* 天气 chip:磨砂白卡,点它跳天气页 */
+  hit('c.chip', 214, 22, 100, 50);
+  rrPath(214, 22, 100, 50, 9);
+  g.fillStyle = 'rgba(252,250,242,.78)'; g.fill();
+  g.strokeStyle = 'rgba(120,110,80,.35)'; g.lineWidth = 1; g.stroke();
+  wxIcon(sceneToIcon(wmoScene(WX.wmo)), 222, 28, 24);
+  txt(`${WX.temp}°`, 252, 48, TH.TXT_HI, '600 17px ' + MONO);
+  txt(WMO_TXT[WX.wmo] || '晴', 252, 62, TH.TXT_MID, FONT.CN10);
+
+  /* 未配网/离线角标(在线时不显示,画面干净) */
+  if (S.net !== 'online') {
+    const b = netBadge();
+    hit('c.net', 6, 222, 168, 20);
+    rrPath(6, 222, 168, 20, 9);
+    g.fillStyle = 'rgba(20,16,8,.55)'; g.fill();
+    txt(b.text, 14, 236, b.c, FONT.CN10);
+  }
+
+  dots(W/2, 234, 0, true);
+}
+
+/* ---------- 页 2:音乐 ----------
+   真机走 BLE(Nordic UART)收手机推的 META|LRC|SPEC;
+   网页预览用模拟频谱。布局:标题38/54 歌词66-108 频谱104-145
+   进度150 按钮178-226 页点232 */
+/* 布局:圆封面居中偏左当主角(音波沿盘外圈跳),歌名/歌手/歌词在右侧,传输键在封面下方 */
+const MU = {
+  coverCx: 88, coverCy: 100, coverR: 42,   /* 圆封面(音波再往外 20px,左边留 26px) */
+  txtX: 162, txtW: 148,                    /* 右侧文字栏 */
+  btnCy: 178, btnGap: 44,                  /* 3 个圆形传输键:封面下方横排 */
+};
+const neon = t => lerp(RGB.ACCENT, RGB.RED, t);
+
+/* ---- 圆形传输键:参考稿风格(主键实心大圆,副键描边小圆) ---- */
+const roundBtn = (id, cx, cy, r, k, primary) => {
+  const hitR = Math.max(r + 6, 15);
+  hit(id, cx - hitR, cy - hitR, hitR*2, hitR*2);
+  const down = S.press === id;
+  if (primary) {
+    glowRing(cx, cy, r, RGB.RED, 4);
+    g.beginPath(); g.arc(cx, cy, r, 0, 6.284);
+    g.fillStyle = down ? TH.ACCENT : TH.RED; g.fill();
+    glyph(k, cx - r*.5, cy - r*.5, r, down ? TH.TXT_HI : '#FFFBF0');
+  } else {
+    g.beginPath(); g.arc(cx, cy, r, 0, 6.284);
+    g.fillStyle = down ? TH.GOLD_DK : TH.CARD; g.fill();
+    g.strokeStyle = down ? TH.ACCENT : TH.RIM; g.lineWidth = 1; g.stroke();
+    glyph(k, cx - r*.46, cy - r*.46, r*.92, down ? TH.TXT_HI : TH.TXT_MID);
+  }
+};
+
+/* ---- 封面:虚线圆环(参考稿右侧)+ 圆盘里跑同一只像素皮卡丘,随播放旋转 ---- */
+const coverDisc = (cx, cy, r, spin, dashRing = true) => {
+  /* 虚线环:短弧段沿圆周排,自转;黄红交替呼应主色。
+     频谱走「封面环形」时让位给频谱射线,不画虚线环。 */
+  const seg = 22;
+  if (dashRing) for (let i = 0; i < seg; i++) {
+    const a0 = i * 360/seg + spin;
+    arc(cx, cy, r + 7, r + 3, a0, a0 + 360/seg * .6, i % 2 ? TH.ACCENT : TH.RED_DK, false);
+  }
+  /* 盘面:浅黄底 */
+  g.beginPath(); g.arc(cx, cy, r, 0, 6.284);
+  g.fillStyle = TH.GOLD_DK; g.fill();
+  /* 里面装皮卡丘的头(按 r10 眼鼻行对中裁圆),和时钟页同一份点阵 */
+  g.save();
+  g.beginPath(); g.arc(cx, cy, r - 1, 0, 6.284); g.clip();
+  const hs = 3;                                  /* 头像放大 3× */
+  drawSprite(PK_BODY, cx - 15*hs, cy - 9*hs, hs);
+  g.restore();
+  g.strokeStyle = TH.ACCENT; g.lineWidth = 1;
+  g.beginPath(); g.arc(cx, cy, r - .5, 0, 6.284); g.stroke();
+};
+/* 环形音波:16 段沿封面圆盘外圈跳动(数据来自 BLE 的 SPEC 帧)。
+   3 种样式都画在这个环上,上下滑切换。 */
+const SPEC_N = 32;                          /* 环上分格数:16 段镜像成 32,环才匀 */
+const specAt = i => S.spec[i < 16 ? i : 31 - i];   /* 左右对称取样 */
+const specRing = (cx, cy, r, style = 0) => {
+  if (style === 0) {                         /* 放射条:一根根向外跳 */
+    for (let i = 0; i < SPEC_N; i++) {
+      const a = arcAngle(i * (360/SPEC_N)) , v = specAt(i);
+      g.strokeStyle = neon(v);
+      g.lineWidth = 3; g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(cx + Math.cos(a)*r, cy + Math.sin(a)*r);
+      g.lineTo(cx + Math.cos(a)*(r + 3 + v*17), cy + Math.sin(a)*(r + 3 + v*17));
+      g.stroke();
+      g.lineCap = 'butt';
+    }
+  } else if (style === 1) {                  /* 环形波纹:峰值连成一条闭合曲线 */
+    g.strokeStyle = TH.RED; g.lineWidth = 2; g.lineJoin = 'round';
+    g.beginPath();
+    for (let i = 0; i <= SPEC_N; i++) {
+      const k = i % SPEC_N;
+      const a = arcAngle(k * (360/SPEC_N)), rr = r + 4 + specAt(k)*16;
+      const px = cx + Math.cos(a)*rr, py = cy + Math.sin(a)*rr;
+      i ? g.lineTo(px, py) : g.moveTo(px, py);
+    }
+    g.closePath(); g.stroke();
+    g.lineJoin = 'miter';
+    /* 峰点点缀 */
+    for (let i = 0; i < SPEC_N; i += 4) {
+      const a = arcAngle(i * (360/SPEC_N)), rr = r + 4 + specAt(i)*16;
+      dot(cx + Math.cos(a)*rr, cy + Math.sin(a)*rr, 2, neon(specAt(i)));
+    }
+  } else {                                   /* 光点绕圈:每段一颗珠子,亮度随音量 */
+    for (let i = 0; i < SPEC_N; i++) {
+      const a = arcAngle(i * (360/SPEC_N)), v = specAt(i);
+      const rr = r + 6 + v*15;
+      g.globalAlpha = .35 + v*.65;
+      dot(cx + Math.cos(a)*rr, cy + Math.sin(a)*rr, 1.6 + v*2.4, neon(v));
+      g.globalAlpha = 1;
+    }
+    arc(cx, cy, r + 1, r, 0, 359.9, dim(RGB.GOLD_DK, .8), false);
+  }
+};
+const progress = (x, y, w, h, t) => {
+  rrPath(x, y, w, h, h/2); g.fillStyle = TH.GOLD_DK; g.fill();
+  const fw = Math.max(h, w * Math.max(0, Math.min(1, t)));
+  g.save();
+  rrPath(x, y, fw, h, h/2); g.clip();
+  for (let i = 0; i < fw; i++) rect(x+i, y, 1, h, lerp(RGB.ACCENT, RGB.RED, i/w));
+  g.restore();
+  dot(x + fw - h/2, y + h/2, h/2 + 1.2, neon(fw/w));
+};
+
+function pageMusic() {
+  if (!S.bt) {
+    statusBar('音乐', S.btState === 'adv' ? '广播中' : '蓝牙已关');
+    glyph('bt', W/2-20, 62, 40, S.btState === 'adv' ? TH.ACCENT : TH.TXT_LO);
+    txt(S.btState === 'adv' ? '等手机来连' : '蓝牙已关闭', W/2, 124, TH.TXT_MID, FONT.CN16, 'center');
+    txt('Pika-Music', W/2, 143, S.btState === 'adv' ? TH.ACCENT : TH.TXT_LO, FONT.NUM14, 'center');
+    txt('手机打开配套 App,搜到名字点连接', W/2, 158, TH.TXT_LO, FONT.CN12, 'center');
+    textBtn('m.btpanel', 96, 170, 128, 30, S.btState === 'adv' ? '蓝牙设置' : '开启蓝牙');
+    pageFooter();
+    dots(W/2, 234, 1, true);
+    return;
+  }
+
+  const pos = S.trackPos;
+  statusBar(S.playing ? '正在播放' : '已暂停', S.btDev);
+
+  /* ---- 圆封面当主角,音波沿盘外圈跳(BLE 的 SPEC);上下滑切 3 种环形样式 ---- */
+  specRing(MU.coverCx, MU.coverCy, MU.coverR + 3, S.vsel[1]);
+  coverDisc(MU.coverCx, MU.coverCy, MU.coverR, S.playing ? sceneClock * 26 : 0, false);
+
+  /* ---- 歌名 / 歌手 / 歌词:封面右侧 ---- */
+  txtClip(song.title, MU.txtX, 62, MU.txtW, TH.TXT_HI, '600 17px ' + CJK);
+  txtClip(song.artist, MU.txtX, 80, MU.txtW, TH.TXT_MID, FONT.CN10);
+  const li = Math.floor(pos / 6) % song.lrc.length;
+  divider(MU.txtX, 92, MU.txtW, RGB.RIM);
+  txtClip(song.lrc[li], MU.txtX, 112, MU.txtW, TH.RED, FONT.CN12);
+  txtClip(song.lrc[(li+1) % song.lrc.length], MU.txtX, 128, MU.txtW, TH.TXT_LO, FONT.CN10);
+  txtClip(song.lrc[(li+2) % song.lrc.length], MU.txtX, 143, MU.txtW, TH.TXT_LO, FONT.CN10);
+
+  /* ---- 3 个圆形传输键:上一曲 / 播放(大) / 下一曲,横排在封面下方 ---- */
+  const cy = MU.btnCy;
+  roundBtn('m.prev', W/2 - MU.btnGap, cy, 14, 'prev', false);
+  roundBtn('m.play', W/2,             cy, 20, S.playing ? 'pause' : 'play', true);
+  roundBtn('m.next', W/2 + MU.btnGap, cy, 14, 'next', false);
+
+  pageFooter();
+  dots(W/2, 234, 1, true);
+}
+
+/* ---------- 页 3:天气(近 7 天详情) ----------
+   样式0:当前概要 + 七日列表;样式1:整页七日 */
+const tempBar = (dd, allLo, allHi, bx, y, bw2, bh) => {
+  rrPath(bx, y, bw2, bh, bh/2); g.fillStyle = TH.CARD_HI; g.fill();
+  const span = Math.max(1, allHi - allLo);
+  const x1 = bx + (dd.lo-allLo)/span*bw2;
+  const x2 = bx + (dd.hi-allLo)/span*bw2;
+  g.save(); rrPath(x1, y, Math.max(6, x2-x1), bh, bh/2); g.clip();
+  for (let px = x1; px < x2; px++) rect(px, y, 1, bh, lerp(RGB.BLUE, RGB.AMBER, (px-bx)/bw2));
+  g.restore();
+};
+function pageWeather() {
+  const style = S.vsel[2];
+  const b = netBadge();
+
+  if (style === 1) {
+    statusBar(WX.city, b.text);
+    const allLo = Math.min(...WX.days.map(d=>d.lo)), allHi = Math.max(...WX.days.map(d=>d.hi));
+    WX.days.forEach((dd, i) => {
+      const y = 24 + i*26;
+      if (i === 0) card(6, y, 308, 24, 6);
+      txt(dd.label, 12, y+16, i === 0 ? TH.TXT_HI : TH.TXT, FONT.CN12);
+      wxIcon(sceneToIcon(wmoScene(dd.wmo)), 46, y+3, 18);
+      txtClip(WMO_TXT[dd.wmo]||'晴', 70, y+16, 44, TH.TXT_MID, FONT.CN10);
+      txt(`${dd.lo}°`, 148, y+16, TH.BLUE, FONT.CN12, 'right');
+      tempBar(dd, allLo, allHi, 154, y+9, 114, 7);
+      txt(`${dd.hi}°`, 302, y+16, TH.AMBER, FONT.CN12, 'right');
+    });
+    pageFooter();
+    dots(W/2, 234, 2, true);
+    return;
+  }
+
+  statusBar(WX.city, b.text);
+  wxIcon(sceneToIcon(wmoScene(WX.wmo)), 10, 26, 58);
+  g.font = '300 46px ' + MONO; g.textAlign = 'left';
+  g.fillStyle = TH.TXT_HI; g.fillText(`${WX.temp}`, 74, 70);
+  txt('°C', 74 + g.measureText(`${WX.temp}`).width + 2, 48, TH.TXT_MID, FONT.CN12);
+  txt(WMO_TXT[WX.wmo]||'晴', 76, 84, TH.TXT, FONT.CN16);
+
+  const kv = (x, y, k, v, c) => { txt(k, x, y, TH.TXT_LO, FONT.CN12); txt(v, x+62, y, c, FONT.CN12, 'right'); };
+  card(180, 26, 132, 62, 7);
+  kv(188, 44, '体感', `${WX.feels}°`, TH.AMBER);
+  kv(188, 60, '湿度', `${WX.hum}%`, TH.BLUE);
+  kv(188, 76, '风', WX.wind, TH.TXT);
+
+  divider(8, 98, 304, RGB.LINE);
+  txt('未来七天', 10, 114, TH.TXT_MID, FONT.CN12);
+
+  const allLo = Math.min(...WX.days.map(d=>d.lo)), allHi = Math.max(...WX.days.map(d=>d.hi));
+  WX.days.forEach((dd, i) => {
+    const y = 116 + i*13;
+    txt(dd.label, 10, y+8, i === 0 ? TH.TXT_HI : TH.TXT_MID, FONT.CN12);
+    wxIcon(sceneToIcon(wmoScene(dd.wmo)), 44, y, 12);
+    txt(`${dd.lo}°`, 88, y+8, TH.BLUE, FONT.CN12, 'right');
+    tempBar(dd, allLo, allHi, 92, y+3, 174, 5);
+    txt(`${dd.hi}°`, 310, y+8, TH.AMBER, FONT.CN12, 'right');
+  });
+  pageFooter();
+  dots(W/2, 234, 2, true);
+}
+
+/* ---------- 页 4:日历(农历+节日+节气) ---------- */
+function pageDate() {
+  const d = now();
+  const view = new Date(d.getFullYear(), d.getMonth() + S.monthOff, 1);
+  const vy = view.getFullYear(), vm = view.getMonth() + 1;
+  const firstDow = view.getDay();
+  const dim2 = new Date(vy, vm, 0).getDate();
+  const isThis = S.monthOff === 0;
+
+  statusBar(`${vy} 年 ${vm} 月`, S.monthOff ? '滑回本月 ↓' : '今天');
+
+  const cw = 42, x0 = 8, y0 = 28;
+  for (let i = 0; i < 7; i++)
+    txt(WEEK[i][1], x0 + i*cw + cw/2, y0 + 9, i===0||i===6 ? TH.PINK : TH.TXT_MID, FONT.CN12, 'center');
+  divider(x0, y0 + 14, cw*7, RGB.LINE);
+
+  const rows = Math.ceil((firstDow + dim2)/7);
+  const rh = Math.min(28, Math.floor(150/rows));
+  for (let i = 0; i < firstDow + dim2; i++) {
+    if (i < firstDow) continue;
+    const day = i - firstDow + 1;
+    const col = i % 7, row = Math.floor(i/7);
+    const cx = x0 + col*cw + cw/2, cy = y0 + 20 + row*rh;
+    const today = isThis && day === d.getDate();
+    const l = solarToLunar(vy, vm, day);
+    const fest = festival(vy, vm, day, l);
+    const term = termToday(vy, vm, day);
+
+    if (today) {
+      cardGrad(x0 + col*cw + 2, cy - 3, cw - 4, rh - 2, 5, RGB.GOLD_DK, RGB.CARD_HI, RGB.ACCENT);
+    }
+    const weekend = col === 0 || col === 6;
+    txt(String(day), cx, cy + 10,
+        today ? TH.TXT_HI : weekend ? TH.PINK : TH.TXT, FONT.NUM14, 'center');
+    const sub = fest || term || (l ? (l.d === 1 ? lunarText(l) : dayName(l.d)) : '');
+    const subC = fest ? TH.RED : term ? TH.GREEN : today ? TH.ACCENT : TH.TXT_LO;
+    if (rh >= 24) txt(sub, cx, cy + 21, subC, FONT.CN10, 'center');
+  }
+
+  if (isThis) {
+    const l = solarToLunar(d.getFullYear(), d.getMonth()+1, d.getDate());
+    divider(8, 196, 304, RGB.LINE);
+    txt(`${lunarText(l)} · ${stemBranch(l?l.y:vy)}${zodiacOf(l?l.y:vy)}年 · 上下滑切月`, 10, 207, TH.AMBER, FONT.CN12);
+  }
+  pageFooter();
+  dots(W/2, 234, 3, true);
+}
+
+/* ---------- 页 5:设置 ---------- */
+const BT_TXT = { con:['已连接 ' + S.btDev, 'GREEN'], adv:['广播中·等连接', 'ACCENT'], off:['已关闭', 'TXT_LO'] };
+const settingRows = () => [
+  { k:'WiFi',  v: S.net === 'online' ? S.wifiSsid : S.net === 'offline' ? `离线 · ${S.wifiSsid}` : '未配置,点此扫描',
+    c: S.net === 'online' ? TH.GREEN : S.net === 'offline' ? TH.AMBER : TH.RED, act:'wifi', arrow:true },
+  { k:'蓝牙',  v: S.bt ? S.btDev : BT_TXT[S.btState][0],
+    c: TH[BT_TXT[S.btState][1]], act:'bt', arrow:true },
+  { k:'亮度',  v:`${S.bright}%`, bar:S.bright/100, c:TH.AMBER, act:'bright' },
+  { k:'频谱样式', v:PAGES[1].vopts[S.vsel[1]], c:TH.ACCENT, act:'spec' },
+  { k:'天气视图', v:PAGES[2].vopts[S.vsel[2]], c:TH.ACCENT, act:'wxview' },
+  { k:'恢复默认设置', v:'', c:TH.AMBER, act:'reset', arrow:true, warn:true },
+  { k:'重启', v:'', c:TH.RED, act:'reboot', arrow:true, warn:true },
+  { k:'关于', v:'ESP32-2432S028 · 5页系统', c:TH.TXT_LO, act:null },
+];
+const SET_VIS = 5, SET_PITCH = 36, SET_TOP = 24;
+function pageSettings() {
+  const rows = settingRows();
+  statusBar('设置', `${S.setSel + 1}/${rows.length}`);
+
+  S.setScroll = clamp(S.setScroll, Math.max(0, S.setSel - SET_VIS + 1),
+                      Math.min(S.setSel, Math.max(0, rows.length - SET_VIS)));
+
+  for (let i = S.setScroll; i < Math.min(rows.length, S.setScroll + SET_VIS); i++) {
+    const r = rows[i], y = SET_TOP + (i - S.setScroll) * SET_PITCH, sel = i === S.setSel;
+    if (r.act) hit('s.row.' + i, 8, y, 298, 34, { focus: false });
+    const down = S.press === 's.row.' + i;
+    if (down)     cardGrad(8, y, 298, 34, 7, mixHex(RGB.CARD_HI, RGB.ACCENT, .3), RGB.CARD_HI, RGB.ACCENT);
+    else if (sel) cardGrad(8, y, 298, 34, 7, RGB.GOLD_DK, RGB.CARD, r.warn ? RGB.AMBER : RGB.ACCENT);
+    else          card(8, y, 298, 34, 7, TH.CARD, TH.LINE);
+
+    txt(r.k, 18, y + 21, sel || down ? TH.TXT_HI : TH.TXT, FONT.CN16);
+    const rx = r.arrow ? 282 : 296;
+    if (r.bar !== undefined) {
+      progress(150, y + 15, 100, 5, r.bar);
+      txt(r.v, rx, y + 21, r.c, FONT.NUM14, 'right');
+    } else if (r.v) {
+      txtClip(r.v, rx, y + 21, 150, r.c, FONT.CN12, 'right');
+    }
+    if (r.arrow) {
+      g.strokeStyle = sel || down ? TH.TXT_MID : TH.TXT_LO; g.lineWidth = 1.4;
+      g.lineCap = 'round'; g.beginPath();
+      g.moveTo(292, y + 13); g.lineTo(298, y + 17); g.lineTo(292, y + 21);
+      g.stroke(); g.lineCap = 'butt';
+    }
+  }
+
+  if (rows.length > SET_VIS) {
+    const trackY = SET_TOP, trackH = SET_VIS * SET_PITCH - 4;
+    rect(310, trackY, 2, trackH, TH.LINE);
+    const thH = Math.max(14, trackH * SET_VIS / rows.length);
+    const thY = trackY + (trackH - thH) * S.setScroll / (rows.length - SET_VIS);
+    rrPath(310, thY, 2, thH, 1); g.fillStyle = TH.ACCENT; g.fill();
+  }
+  pageFooter();
+  dots(W/2, 234, 4, true);
+}
+/* =====================================================================
+   11. 弹窗 —— WiFi 配网全流程 / 蓝牙 / 重置
+   ===================================================================== */
+const NETS = [   /* 模拟扫描结果(真机 WiFi.scan()) */
+  { ssid:'Pika-Home',     sig:3, lock:false },
+  { ssid:'FreeWiFi-Park', sig:3, lock:false },
+  { ssid:'Xiaomi-9F2A',   sig:2, lock:true },
+  { ssid:'ChinaNet-xk4',  sig:2, lock:true },
+  { ssid:'Neighbor_5G',   sig:1, lock:true },
+  { ssid:'TP-LINK_2A4F',  sig:1, lock:true },
+];
+const KB_LOWER = ['qwertyuiop','asdfghjkl','zxcvbnm'];
+const KB_UPPER = ['QWERTYUIOP','ASDFGHJKL','ZXCVBNM'];
+const KB_NUM   = ['1234567890','-/:;()@&"',".?!'"];
+
+const openModal = kind => {
+  S.modal = { kind, sel: 0, ssid: '', pass: '', kbShift: false, kbNum: false, connT: 0 };
+};
+const MODAL_BTN_H = 30;
+
+const modalFrame = (x, y, w, h, title, rim = RGB.ACCENT) => {
+  g.globalAlpha = .72; rect(0, 0, W, H, TH.BG); g.globalAlpha = 1;
+  hit('x.dismiss', 0, 0, W, H);
+  hit('x.card', x, y, w, h);
+  glowRect(x, y, w, h, 9, rim, 4);
+  cardGrad(x, y, w, h, 9, RGB.CARD_HI, RGB.CARD, rim);
+  txt(title, x + 14, y + 20, TH.TXT_HI, FONT.CN16);
+  divider(x + 12, y + 27, w - 24, RGB.RIM);
+};
+const modalBtns = (x, y, w, list) => {
+  S.modal.sel = clamp(S.modal.sel, 0, list.length - 1);
+  const gap = 8, bw = (w - gap*(list.length - 1)) / list.length;
+  list.forEach((b, i) => textBtn('x.' + b.id, x + i*(bw + gap), y, bw, MODAL_BTN_H,
+    b.label, b.c || RGB.ACCENT, S.modal.sel === i));
+};
+/* 信号强度:3 根柱 */
+const sigBars = (x, y, n) => {
+  for (let i = 0; i < 3; i++) {
+    const on = i < n;
+    const h = 3 + i * 3;
+    rect(x + i*4, y + 9 - h, 3, h, on ? (n === 3 ? TH.GREEN : n === 2 ? TH.AMBER : TH.TXT_LO) : TH.LINE);
+  }
+};
+
+function drawModal() {
+  const m = S.modal;
+  if (!m) return;
+
+  if (m.kind === 'wifi') {
+    modalFrame(14, 20, 292, 200, '选择网络 · 点击连接');
+    NETS.forEach((n, i) => {
+      const y = 36 + i * 24;
+      hit('w.net.' + i, 22, y, 276, 22);
+      const down = S.press === 'w.net.' + i;
+      if (down) cardGrad(22, y, 276, 22, 5, mixHex(RGB.CARD_HI, RGB.ACCENT, .3), RGB.CARD_HI, RGB.ACCENT);
+      else card(22, y, 276, 22, 5, TH.CARD, TH.LINE);
+      if (S.wifiSsid === n.ssid) dot(28, y + 11, 2.5, TH.GREEN);
+      txtClip(n.ssid, 36, y + 16, 180, TH.TXT, FONT.CN12);
+      if (n.lock) glyph('lock', 232, y + 4, 13, TH.TXT_MID);
+      sigBars(258, y + 4, n.sig);
+    });
+    modalBtns(30, 186, 260, [
+      { id:'w.refresh', label:'重新扫描' },
+      { id:'w.cancel',  label:'取消', c:RGB.TXT_MID },
+    ]);
+
+  } else if (m.kind === 'kb') {
+    /* 密码键盘:显示行 + 3 排键 + 底部功能行 */
+    modalFrame(6, 14, 308, 212, `输入密码 · ${m.ssid}`);
+    /* 密码行 */
+    card(14, 30, 292, 24, 6, TH.CARD, TH.ACCENT);
+    const blink = (sceneClock * 2 % 1) < .5 ? '▎' : ' ';
+    txtClip(m.pass + blink, 22, 47, 260, TH.TXT_HI, FONT.NUM14);
+    /* 键盘区 */
+    const rows = m.kbNum ? KB_NUM : (m.kbShift ? KB_UPPER : KB_LOWER);
+    rows.forEach((row, r) => {
+      const kw = 27.5, gap = 2.5;
+      const rowW = row.length * kw + (row.length - 1) * gap;
+      const x0 = (W - rowW) / 2, y = 62 + r * 27;
+      [...row].forEach((ch, c) => {
+        const kx = x0 + c * (kw + gap);
+        const id = 'k.k.' + r + ':' + c;
+        hit(id, kx, y, kw, 24, { focus: true });
+        const down = S.press === id;
+        if (down) card(kx, y, kw, 24, 4, TH.CARD_HI, RGB.ACCENT);
+        else card(kx, y, kw, 24, 4, TH.CARD, TH.RIM);
+        txt(ch, kx + kw/2, y + 16, down ? TH.TXT_HI : TH.TXT, FONT.CN12, 'center');
+      });
+    });
+    /* 底部:取消 / 大写 / 数字 / 退格 / 连接 */
+    const fy = 148, fh = 26;
+    const seg = [
+      { id:'k.cancel', label:'取消',   w:52, c:RGB.TXT_MID },
+      { id:'k.shift',  label:m.kbShift ? '小写' : '大写', w:52, c:m.kbShift ? RGB.RED : RGB.ACCENT },
+      { id:'k.num',    label:m.kbNum ? 'ABC' : '123',  w:52, c:m.kbNum ? RGB.RED : RGB.ACCENT },
+      { id:'k.bs',     label:'⌫ 退格', w:64, c:RGB.AMBER },
+      { id:'k.ok',     label:'连接',   w:64, c:RGB.RED },
+    ];
+    let fx = 12;
+    seg.forEach(b => {
+      hit(b.id, fx, fy, b.w, fh, { focus: true });
+      const down = S.press === b.id;
+      if (down) cardGrad(fx, fy, b.w, fh, 6, mixHex(RGB.CARD_HI, b.c, .35), RGB.CARD_HI, b.c);
+      else card(fx, fy, b.w, fh, 6, TH.CARD, toCss(b.c));
+      txt(b.label, fx + b.w/2, fy + 17, down ? TH.TXT_HI : toCss(b.c), FONT.CN12, 'center');
+      fx += b.w + 6;
+    });
+    txt(`密码至少 8 位 · 已输入 ${m.pass.length}`, W/2, 196, TH.TXT_LO, FONT.CN10, 'center');
+    txt('电脑键盘直接敲字也行', W/2, 210, TH.TXT_LO, FONT.CN10, 'center');
+
+  } else if (m.kind === 'connecting') {
+    modalFrame(60, 66, 200, 108, '正在连接');
+    const a = sceneClock * 360 % 360;
+    arc(W/2, 108, 16, 11, a, a + 130, TH.ACCENT, true);
+    txt(m.ssid, W/2, 138, TH.TXT, FONT.CN16, 'center');
+    txt('获取天气数据中…', W/2, 154, TH.TXT_MID, FONT.CN12, 'center');
+
+  } else if (m.kind === 'bt') {
+    modalFrame(18, 34, 284, 172, '蓝牙');
+    glyph('bt', 30, 74, 26, S.bt ? TH.ACCENT : TH.TXT_LO);
+    txt('Pika-Music', 66, 82, TH.TXT_HI, FONT.CN16);
+    txt(S.btState === 'con' ? `已连接 ${S.btDev}` : BT_TXT[S.btState][0],
+        66, 98, TH[BT_TXT[S.btState][1]], FONT.CN12);
+    txt('这是 BLE 连接,不用在手机蓝牙设置里配对。', 30, 124, TH.TXT_MID, FONT.CN12);
+    txt('装好配套 App,搜到上面的名字点连接即可。', 30, 140, TH.TXT_MID, FONT.CN12);
+    modalBtns(30, 162, 260, S.btState === 'con'
+      ? [{ id:'bt.disc', label:'断开' }, { id:'bt.forget', label:'忘记设备', c:RGB.AMBER }]
+      : S.btState === 'adv'
+      ? [{ id:'bt.off', label:'关闭蓝牙', c:RGB.AMBER }, { id:'bt.readv', label:'重新广播' }]
+      : [{ id:'bt.on', label:'开启蓝牙', c:RGB.GREEN }]);
+
+  } else if (m.kind === 'reset' || m.kind === 'reboot') {
+    const isReset = m.kind === 'reset';
+    modalFrame(26, 56, 268, 128, isReset ? '恢复默认设置' : '重启设备', RGB.AMBER);
+    if (isReset) {
+      txt('会清掉:亮度、样式、WiFi 配置。', 40, 104, TH.TXT, FONT.CN12);
+      txt('清完回到时钟页。', 40, 122, TH.TXT_MID, FONT.CN12);
+    } else {
+      txt('设置会保留,大约 3 秒后回到时钟页。', 40, 112, TH.TXT, FONT.CN12);
+    }
+    modalBtns(40, 144, 240, [{ id:'cancel', label:'取消', c:RGB.TXT_MID },
+      { id: isReset ? 'reset.go' : 'reboot.go', label: isReset ? '确认清除' : '确认重启', c:RGB.RED }]);
+  }
+}
+
+/* 连接完成:真机这里写 NVS 并开始 SNTP+拉天气 */
+const connectDone = () => {
+  const m = S.modal;
+  if (!m) return;
+  S.net = 'online';
+  S.wifiSsid = m.ssid;
+  refreshT = .5;                       /* 连上马上拉一次天气 */
+  S.modal = null;
+  toast(`已连接 ${m.ssid}`);
+  syncRig(); syncNetInfo(); syncNetSeg();
+};
+/* =====================================================================
+   12. 主循环 —— 翻页动画 / 模态计时 / toast
+   ===================================================================== */
+const RENDER = [pageClock, pageMusic, pageWeather, pageDate, pageSettings];
+let SCALE = 3, GRID = false, HITBOX = false;
+const shell = document.getElementById('shell');
+
+let slideFrom = -1;
+const drawFrame = () => {
+  rect(0, 0, W, H, TH.BG);
+  HITS = [];
+  const sliding = Math.abs(S.slide) > 0.002 && slideFrom >= 0;
+  hitOn = !sliding;
+  if (sliding) {
+    const dir = Math.sign(S.slide);
+    const off = -S.slide * W;
+    g.save(); g.translate(off, 0);            RENDER[slideFrom](); g.restore();
+    g.save(); g.translate(off + dir * W, 0);  RENDER[S.page]();    g.restore();
+  } else {
+    RENDER[S.page]();
+  }
+  hitOn = true;
+  if (S.modal) { HITS = []; drawModal(); }
+  drawToast();
+  if (HITBOX) {
+    g.save(); g.lineWidth = 1;
+    for (const t of HITS) {
+      if (t.w >= W && t.h >= H) continue;
+      g.strokeStyle = 'rgba(61,220,132,.9)';
+      g.strokeRect(t.x + .5, t.y + .5, t.w - 1, t.h - 1);
+      g.fillStyle = 'rgba(61,220,132,.10)'; g.fillRect(t.x, t.y, t.w, t.h);
+      g.fillStyle = 'rgba(61,220,132,.95)'; g.font = '9px ' + MONO;
+      g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+      g.fillText(`${Math.round(t.w)}×${Math.round(t.h)}`, t.x + 2, t.y + 9);
+    }
+    g.restore();
+  }
+  if (GRID) {
+    g.globalAlpha = .1; g.fillStyle = '#fff';
+    for (let x = 0; x < W; x += 2) g.fillRect(x, 0, 1, H);
+    g.globalAlpha = 1;
+  }
+};
+
+let last = performance.now(), infoTick = 0;
+const loop = t => {
+  const dt = Math.min(.05, (t - last)/1000); last = t;
+  if (S.anim) {
+    sceneClock += dt;
+    tickSpec(dt);
+    tickNetwork(dt);
+    if (S.bt && S.playing) {
+      S.trackPos += dt; if (S.trackPos > song.dur) S.trackPos = 0;
+    }
+    /* 步频跟地面滚动速度挂钩:地面走 22px = 一个 4 帧步态循环,脚不打滑 */
+    S.pkFrame = Math.floor(sceneClock * PK_SPD / 22 * 4) % 4;
+    /* 草丛向左滚:皮卡丘原地跑,是地面在动 */
+    for (const t of TUFTS) {
+      t.x -= PK_SPD * dt;
+      if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng() * 2); }
+    }
+    if (S.pkJump !== null) { S.pkJump += dt / .55; if (S.pkJump >= 1) S.pkJump = null; }
+    tickAutoPage(dt);
+  }
+  if (S.modal && S.modal.kind === 'connecting') {
+    S.modal.connT -= dt;
+    if (S.modal.connT <= 0) connectDone();
+  }
+  if (++infoTick % 6 === 0) { syncAutoInfo(); syncNetInfo(); }
+  if (S.toastT > 0) S.toastT -= dt;
+  if (Math.abs(S.slide) > 0.002) S.slide *= Math.pow(.00002, dt);
+  else S.slide = 0;
+  drawFrame();
+  requestAnimationFrame(loop);
+};
+
+/* =====================================================================
+   13. 输入 —— 热区动作 / 键盘 / 触摸手势(阈值同参考固件 config.h)
+   ===================================================================== */
+const setPage = (idx, dir) => {
+  if (idx === S.page) return;
+  slideFrom = S.page;
+  S.page = idx;
+  S.slide = dir;
+  syncRig();
+};
+const goPage = dir => setPage((S.page + dir + PAGES.length) % PAGES.length, dir);
+
+const MUSIC_IDLE_S = 10, MANUAL_HOLD_S = 30;
+const markManual = () => { S.manualT = MANUAL_HOLD_S; };
+const tickAutoPage = dt => {
+  if (S.manualT > 0) S.manualT = Math.max(0, S.manualT - dt);
+  const live = S.bt && S.playing;
+  S.idleT = live ? 0 : S.idleT + dt;
+  if (!S.autoPage || S.modal || S.manualT > 0) return;
+  const want = live ? 1 : (S.idleT >= MUSIC_IDLE_S ? 0 : -1);
+  if (want >= 0 && want !== S.page) setPage(want, want > S.page ? 1 : -1);
+};
+
+const goVert = dir => {
+  const p = PAGES[S.page];
+  if (S.modal) {
+    const n = HITS.filter(t => t.focus).length || 1;
+    S.modal.sel = (S.modal.sel + dir + n) % n;
+    return;
+  }
+  if (p.id === 'date') {
+    S.monthOff += dir;
+    if (Math.abs(S.monthOff) > 12) S.monthOff = 0;
+    toast(S.monthOff === 0 ? '本月' : `${S.monthOff > 0 ? '+' : ''}${S.monthOff} 个月`);
+  } else if (p.id === 'settings') {
+    const n = settingRows().length;
+    S.setSel = (S.setSel + dir + n) % n;
+  } else if (p.id === 'music' || p.id === 'weather') {
+    S.vsel[S.page] = (S.vsel[S.page] + dir + p.vopts.length) % p.vopts.length;
+    toast(`${p.vlabel}:${p.vopts[S.vsel[S.page]]}`);
+  } else {
+    toast('时钟页 ↑↓ 没有别的操作');
+  }
+  syncRig();
+};
+
+const setBt = st => { S.btState = st; syncRig(); };
+
+/* ---- 动作:热区 id → 行为,唯一入口 ---- */
+const doAct = id => {
+  if (id === null || id === undefined) return;
+  /* --- 时钟页 --- */
+  if (id === 'c.chip') { setPage(2, 1); return; }
+  if (id === 'c.net')  { setPage(4, 1); return; }
+  if (id === 'c.pika') { if (S.pkJump === null) S.pkJump = 0; return; }
+  /* --- 音乐页 --- */
+  if (id === 'm.play')  { S.playing = !S.playing; toast(S.playing ? '播放' : '暂停'); syncAutoInfo(); return; }
+  if (id === 'm.prev')  { S.trackPos = 0; toast('上一曲'); return; }
+  if (id === 'm.next')  { S.trackPos = 0; toast('下一曲'); return; }
+  if (id === 'm.btpanel') {
+    if (S.btState === 'off') { setBt('adv'); toast('蓝牙已开,正在广播'); }
+    else openModal('bt');
+    return;
+  }
+  /* --- 设置页 --- */
+  if (id.startsWith('s.row.')) {
+    const i = +id.slice(6);
+    S.setSel = i; syncRig();
+    doAct('act.' + (settingRows()[i].act || ''));
+    return;
+  }
+  if (id === 'act.wifi')  { openModal('wifi'); return; }
+  if (id === 'act.bt')    { openModal('bt'); return; }
+  if (id === 'act.bright') {
+    S.bright = S.bright >= 100 ? 10 : Math.min(100, S.bright + 15);
+    toast(`亮度 ${S.bright}%`); return;
+  }
+  if (id === 'act.spec')   { S.vsel[1] = (S.vsel[1]+1) % PAGES[1].vopts.length; toast(PAGES[1].vopts[S.vsel[1]]); return; }
+  if (id === 'act.wxview') { S.vsel[2] = (S.vsel[2]+1) % PAGES[2].vopts.length; toast(PAGES[2].vopts[S.vsel[2]]); return; }
+  if (id === 'act.reset')  { openModal('reset'); return; }
+  if (id === 'act.reboot') { openModal('reboot'); return; }
+  /* --- WiFi 列表 --- */
+  if (id.startsWith('w.net.')) {
+    const n = NETS[+id.slice(6)];
+    if (!n) return;
+    if (n.lock) { S.modal = { ...S.modal, kind:'kb', ssid:n.ssid, pass:'', kbShift:false, kbNum:false }; }
+    else { S.modal = { ...S.modal, kind:'connecting', ssid:n.ssid, connT:1.4 }; }
+    return;
+  }
+  if (id === 'w.refresh') { toast('已重新扫描'); return; }
+  if (id === 'w.cancel')  { S.modal = null; return; }
+  /* --- 密码键盘 --- */
+  if (id.startsWith('k.k.')) {
+    const [r, c] = id.slice(4).split(':').map(Number);
+    const rows = S.modal.kbNum ? KB_NUM : (S.modal.kbShift ? KB_UPPER : KB_LOWER);
+    const ch = (rows[r] || '')[c];
+    if (ch && S.modal.pass.length < 24) S.modal.pass += ch;
+    return;
+  }
+  if (id === 'k.shift') { S.modal.kbShift = !S.modal.kbShift; return; }
+  if (id === 'k.num')   { S.modal.kbNum = !S.modal.kbNum; return; }
+  if (id === 'k.bs')    { S.modal.pass = S.modal.pass.slice(0, -1); return; }
+  if (id === 'k.cancel'){ S.modal = { ...S.modal, kind:'wifi' }; return; }
+  if (id === 'k.ok') {
+    if (S.modal.pass.length < 8) { toast('密码至少 8 位'); return; }
+    S.modal = { ...S.modal, kind:'connecting', connT:1.4 };
+    return;
+  }
+  /* --- 弹窗通用/蓝牙 --- */
+  if (id === 'x.dismiss' || id === 'x.cancel') { S.modal = null; return; }
+  if (id === 'x.card') return;
+  if (id === 'x.bt.disc')   { setBt('adv'); S.modal = null; toast('已断开'); return; }
+  if (id === 'x.bt.forget') { setBt('adv'); S.modal = null; toast('已忘记设备'); return; }
+  if (id === 'x.bt.off')    { setBt('off'); S.modal = null; toast('蓝牙已关'); return; }
+  if (id === 'x.bt.on')     { setBt('adv'); S.modal = null; toast('蓝牙已开,正在广播'); return; }
+  if (id === 'x.bt.readv')  { S.modal = null; toast('已重新广播'); return; }
+  if (id === 'x.reset.go') {
+    S.bright = 72; S.autoPage = true; S.playing = true;
+    S.vsel = PAGES.map(() => 0); S.setSel = 0; S.setScroll = 0; S.monthOff = 0;
+    setBt('con'); S.modal = null; setPage(0, -1); toast('已恢复默认');
+    return;
+  }
+  if (id === 'x.reboot.go') { S.modal = null; setPage(0, -1); toast('重启中…'); return; }
+};
+
+/* ---- 键盘 ---- */
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter',' '].includes(k)) markManual();
+  /* 键盘弹窗开着:可打字 */
+  if (S.modal && S.modal.kind === 'kb' && k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    if (S.modal.pass.length < 24) S.modal.pass += k;
+    return;
+  }
+  if (S.modal && S.modal.kind === 'kb' && (k === 'Backspace' || k === 'Enter')) {
+    e.preventDefault();
+    if (k === 'Backspace') doAct('k.bs');
+    else doAct('k.ok');
+    return;
+  }
+  if (k === 'ArrowLeft')  { if (!S.modal) goPage(-1); e.preventDefault(); }
+  if (k === 'ArrowRight') { if (!S.modal) goPage(1);  e.preventDefault(); }
+  if (k === 'ArrowUp')    { goVert(-1); e.preventDefault(); }
+  if (k === 'ArrowDown')  { goVert(1);  e.preventDefault(); }
+  if (k === 'Escape')     { S.modal = null; e.preventDefault(); }
+  if (k === 'Enter') {
+    e.preventDefault();
+    if (S.modal) {
+      const f = HITS.filter(t => t.focus)[S.modal.sel];
+      if (f) doAct(f.id);
+    } else if (PAGES[S.page].id === 'settings') doAct('s.row.' + S.setSel);
+    return;
+  }
+  if (k === ' ') { S.playing = !S.playing; e.preventDefault(); }
+});
+
+/* ---- 指针(鼠标/触摸) ---- */
+let dragS = null, dragHit = null, swiped = false;
+const ptPos = e => {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / (r.width/W), y: (e.clientY - r.top) / (r.height/H), t: performance.now() };
+};
+cv.addEventListener('pointerdown', e => {
+  dragS = ptPos(e); swiped = false;
+  markManual();
+  dragHit = hitAt(dragS.x, dragS.y);
+  if (dragHit) S.press = dragHit.id;
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e => {
+  if (!dragS) return;
+  const p = ptPos(e);
+  const dx = p.x - dragS.x, dy = p.y - dragS.y;
+  if (S.press && !inHit(dragHit, p.x, p.y)) S.press = null;
+  if (Math.abs(dx) > 18 || Math.abs(dy) > 18) S.press = null;
+});
+cv.addEventListener('pointerup', e => {
+  if (!dragS) return;
+  const p = ptPos(e);
+  const dx = p.x - dragS.x, dy = p.y - dragS.y;
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  const ms = p.t - dragS.t;
+  const wasHit = dragHit, wasPress = S.press;
+  dragS = null; dragHit = null; S.press = null;
+
+  if (ax < 18 && ay < 18) {
+    if (wasPress && inHit(wasHit, p.x, p.y)) doAct(wasPress);
+    else if (S.modal) doAct('x.dismiss');
+    return;
+  }
+  if (ms > 900) return;
+  if (S.modal) return;
+  if (ax >= 45 && ax > ay * 1.6) {
+    goPage(dx < 0 ? 1 : -1);                 /* 左滑 = 下一页 */
+  } else if (ay >= 45 && ay > ax * 1.6) goVert(dy < 0 ? 1 : -1);
+});
+cv.addEventListener('pointercancel', () => { dragS = null; dragHit = null; S.press = null; });
+
+/* =====================================================================
+   14. 控制台联动
+   ===================================================================== */
+const pagesEl = document.getElementById('pages');
+PAGES.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.className = 'pg';
+  b.innerHTML = `<span class="n">${i+1}</span><span>${p.name}</span>`;
+  b.onclick = () => { markManual(); setPage(i, i > S.page ? 1 : -1); };
+  pagesEl.appendChild(b);
+});
+const vaxisEl = document.getElementById('vaxis');
+function syncRig() {
+  [...pagesEl.children].forEach((b, i) => b.setAttribute('aria-current', i === S.page));
+  const p = PAGES[S.page];
+  if (p.id === 'date')      vaxisEl.innerHTML = `<b>↑↓ 切换月份</b><br><em>${S.monthOff === 0 ? '本月' : (S.monthOff>0?'+':'') + S.monthOff + ' 个月'}</em>`;
+  else if (p.id === 'settings') vaxisEl.innerHTML = `<b>↑↓ 移动选中</b><br><em>${settingRows()[S.setSel].k} · 点按修改</em>`;
+  else                          vaxisEl.innerHTML = `<b>↑↓ ${p.vlabel}</b><br><em>${p.vopts[S.vsel[S.page]] || ''}</em>`;
+}
+
+const bind = (id, fn) => document.getElementById(id).addEventListener('change', e => fn(e.target.checked));
+bind('q565', v => { QUANT = v; buildTheme(v); });
+bind('scanline', v => { GRID = v; });
+bind('anim', v => { S.anim = v; });
+bind('hitbox', v => { HITBOX = v; });
+bind('playing', v => { S.playing = v; markManual(); });
+bind('autopage', v => { S.autoPage = v; });
+
+const autoInfoEl = document.getElementById('autoinfo');
+function syncAutoInfo() {
+  const live = S.bt && S.playing;
+  let s;
+  if (!S.autoPage)        s = '已关闭,页面不会自己动';
+  else if (S.manualT > 0) s = `手动保护中,还有 <b>${S.manualT.toFixed(0)}s</b> 不跳页`;
+  else if (live)          s = '在放歌 → 锁在<b>音乐页</b>';
+  else if (S.idleT < MUSIC_IDLE_S) s = `已停 <b>${S.idleT.toFixed(1)}s</b>,满 ${MUSIC_IDLE_S}s 回时钟页`;
+  else                    s = '没在放歌 → 停在<b>时钟页</b>';
+  autoInfoEl.innerHTML = `<b>自动跳页</b><br><em>${s}</em>`;
+}
+
+/* 场景实验室 */
+document.getElementById('wxOvr').addEventListener('change', e => { S.wxOvr = e.target.value; });
+document.getElementById('todOvr').addEventListener('change', e => { S.todOvr = e.target.value; });
+
+/* 网络模拟 */
+const netsegEl = document.getElementById('netseg');
+const syncNetSeg = () => {
+  [...netsegEl.children].forEach(b => b.setAttribute('aria-pressed', b.dataset.n === S.net));
+};
+const setNet = n => {
+  S.net = n;
+  if (n === 'unconfig') { S.wifiSsid = ''; toast('已清掉配网,走演示数据'); }
+  if (n === 'online')   { if (!S.wifiSsid) S.wifiSsid = 'Pika-Home'; refreshT = .5; toast('已联网'); }
+  if (n === 'offline')  toast('WiFi 断了,继续用缓存');
+  syncNetSeg(); syncRig(); syncNetInfo();
+};
+netsegEl.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  setNet(b.dataset.n);
+});
+document.getElementById('srcsel').addEventListener('change', e => {
+  S.netSource = e.target.value;
+  if (S.net === 'online') refreshT = .5;
+  toast(S.netSource === 'api' ? '切换到在线 API' : '切换到演示数据');
+});
+document.getElementById('citysel').addEventListener('change', e => {
+  const [lat, lon] = e.target.value.split(',').map(Number);
+  const name = e.target.selectedOptions[0].textContent.replace('城市:', '');
+  S.city = { name, lat, lon };
+  toast(`城市:${name}`);
+  if (S.net === 'online') refreshT = .5;
+});
+document.getElementById('refetch').addEventListener('click', () => forceRefresh());
+
+const netinfoEl = document.getElementById('netinfo');
+function syncNetInfo() {
+  if (!netinfoEl) return;
+  const b = netBadge();
+  let s = `<b>${b.text}</b><br><em>`;
+  if (S.net === 'online')    s += `缓存 7 天预报 · 下次刷新 ${Math.max(0, Math.ceil(refreshT))}s(代表真机 30 分钟)`;
+  else if (S.net === 'offline') s += '断网继续用缓存,时钟照走(板载 RTC)';
+  else                       s += '没配过网:页面用演示数据,到设置页配网';
+  netinfoEl.innerHTML = s + '</em>';
+}
+
+/* 蓝牙 */
+const btsegEl = document.getElementById('btseg');
+btsegEl.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  setBt(b.dataset.b);
+  [...btsegEl.children].forEach(x => x.setAttribute('aria-pressed', x === b));
+});
+
+/* 缩放 */
+const scaleEl = document.getElementById('scale');
+const dimsEl = document.getElementById('dims');
+const applyScale = s => {
+  SCALE = s;
+  cv.style.width  = (W*s) + 'px';
+  cv.style.height = (H*s) + 'px';
+  dimsEl.innerHTML = `320 × 240 px · 显示比例 <b>${s}×</b>`;
+  [...scaleEl.children].forEach(b => b.setAttribute('aria-pressed', +b.dataset.s === s));
+};
+scaleEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) applyScale(+b.dataset.s); });
+
+/* ---- 启动 ---- */
+buildTheme(true);
+applyScale(3);
+/* 预览自检钩子:URL 片段直接把界面摆到指定状态,方便截图审阅,不影响正常使用。
+   例:ui.html#page=1&lrc=0&spec=2   ui.html#page=0&wx=rain&tod=night */
+(() => {
+  const h = location.hash.slice(1);
+  if (!h) return;
+  const q = {};
+  for (const kv of h.split('&')) { const [k, v] = kv.split('='); if (k) q[k] = v; }
+  const num = (k, f) => { if (q[k] !== undefined) f(+q[k]); };
+  if (q.page !== undefined) {
+    S.page = clamp(+q.page, 0, PAGES.length - 1);
+    S.autoPage = false;
+    const cb = document.getElementById('autopage'); if (cb) cb.checked = false;
+  }
+  num('spec', v => S.vsel[1] = clamp(v, 0, PAGES[1].vopts.length - 1));
+  num('v',    v => S.vsel[S.page] = clamp(v, 0, Math.max(0, PAGES[S.page].vopts.length - 1)));
+  num('play', v => S.playing = !!v);
+  if (q.bt)  S.btState = q.bt;
+  if (q.net) S.net = q.net;
+  if (q.wx)  S.wxOvr = q.wx;
+  if (q.tod) S.todOvr = q.tod;
+  syncRig();
+})();
+syncRig();
+syncAutoInfo();
+syncNetSeg();
+syncNetInfo();
+shell.classList.add('glowing');
+/* 等字体到位再开画,否则首帧宽度量错 */
+(document.fonts ? document.fonts.ready : Promise.resolve())
+  .then(() => requestAnimationFrame(loop));
+</script>
