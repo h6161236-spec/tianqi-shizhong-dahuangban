@@ -31,6 +31,8 @@ constexpr int GFX_STRIP_W = SCR_W;   // 320,整屏宽,跑马灯直接靠边界�
 constexpr int GFX_STRIP_H = 28;
 constexpr int GFX_BAR_W = 20;       // 18px 柱 + 2px 柱间距
 constexpr int GFX_BAR_H = 64;       // 频谱最大高度;每柱整块覆盖,缩短无残影
+constexpr int GFX_DISC_W = 128;     // 音乐页圆盘+环形音波+三个圆形键区
+constexpr int GFX_DISC_H = 164;     // (x26,y36)-(x154,y200),整块一次推送防闪
 
 /**
  * 天气图标类型 = 场景组的图标化。wx 模块把 WMO code 映射到场景组,
@@ -87,16 +89,19 @@ TFT_eSPI& screen();
 TFT_eSprite& big();
 TFT_eSprite& strip();
 TFT_eSprite& bar();
+TFT_eSprite& disc();
 
 /** 清成 bg 并把文字目标切到这块 Sprite 上 */
 void beginBig(uint16_t bg);
 void beginStrip(uint16_t bg);
 void beginBar(uint16_t bg);
+void beginDisc(uint16_t bg);
 
 /** 送屏。push 完会把文字目标切回屏幕,避免忘了切导致画错地方。 */
 void pushBig(int x, int y);
 void pushStrip(int x, int y);
 void pushBar(int x, int y);
+void pushDisc(int x, int y);
 
 /** 以 transparentColor 为透明色送屏(在场景/照片上叠文字用) */
 void pushBigTransparent(int x, int y, uint16_t transparentColor);

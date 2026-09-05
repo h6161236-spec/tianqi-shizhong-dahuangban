@@ -11,6 +11,7 @@ TFT_eSPI* g_tft = nullptr;
 TFT_eSprite* g_big = nullptr;
 TFT_eSprite* g_strip = nullptr;
 TFT_eSprite* g_bar = nullptr;
+TFT_eSprite* g_disc = nullptr;
 
 /**
  * TFT_eSPI 的抗锯齿图元约定:bg_color 传这个哨兵值时,它会 readPixel 取
@@ -169,15 +170,19 @@ bool init(TFT_eSPI& screen_) {
   static TFT_eSprite sBig(&screen_);
   static TFT_eSprite sStrip(&screen_);
   static TFT_eSprite sBar(&screen_);
+  static TFT_eSprite sDisc(&screen_);
   g_big = &sBig;
   g_strip = &sStrip;
   g_bar = &sBar;
+  g_disc = &sDisc;
 
   sBig.setColorDepth(16);
   sStrip.setColorDepth(16);
   sBar.setColorDepth(16);
+  sDisc.setColorDepth(16);
 
   // 先分配大的。堆此刻还是整块的,越早分配越不容易失败。
+  if (!sDisc.createSprite(GFX_DISC_W, GFX_DISC_H)) return false;
   if (!sBig.createSprite(GFX_BIG_W, GFX_BIG_H)) return false;
   if (!sStrip.createSprite(GFX_STRIP_W, GFX_STRIP_H)) return false;
   if (!sBar.createSprite(GFX_BAR_W, GFX_BAR_H)) return false;
@@ -188,14 +193,17 @@ TFT_eSPI& screen() { return *g_tft; }
 TFT_eSprite& big() { return *g_big; }
 TFT_eSprite& strip() { return *g_strip; }
 TFT_eSprite& bar() { return *g_bar; }
+TFT_eSprite& disc() { return *g_disc; }
 
 void beginBig(uint16_t bg) { g_big->fillSprite(bg); Txt::target(*g_big); }
 void beginStrip(uint16_t bg) { g_strip->fillSprite(bg); Txt::target(*g_strip); }
 void beginBar(uint16_t bg) { g_bar->fillSprite(bg); Txt::target(*g_bar); }
+void beginDisc(uint16_t bg) { g_disc->fillSprite(bg); Txt::target(*g_disc); }
 
 void pushBig(int x, int y) { g_big->pushSprite(x, y); Txt::target(*g_tft); }
 void pushStrip(int x, int y) { g_strip->pushSprite(x, y); Txt::target(*g_tft); }
 void pushBar(int x, int y) { g_bar->pushSprite(x, y); Txt::target(*g_tft); }
+void pushDisc(int x, int y) { g_disc->pushSprite(x, y); Txt::target(*g_tft); }
 
 void pushBigTransparent(int x, int y, uint16_t transparentColor) {
   g_big->pushSprite(x, y, transparentColor);

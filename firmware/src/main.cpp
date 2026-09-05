@@ -610,8 +610,10 @@ static void parseBleLine(char* line) {
     strlcpy(g_media.title, p, sizeof(g_media.title));
     strlcpy(g_media.artist, br ? br + 1 : "", sizeof(g_media.artist));
     Serial.printf("[ble] meta: %s - %s\n", g_media.title, g_media.artist);
+    UI::notifyBtChanged();   // 歌名/歌手变了,音乐页文字区要重绘
   } else if (strncmp(line, "LRC|", 4) == 0) {
     strlcpy(g_media.lyric, line + 4, sizeof(g_media.lyric));
+    UI::notifyBtChanged();   // 歌词行进到下一句,文字区要重绘
   } else if (strncmp(line, "PLAY|", 5) == 0) {
     const bool np = line[5] == '1';
     // PLAY|1 是每 3 秒一次的存活心跳;PLAY|0 只在状态变化时刷新。

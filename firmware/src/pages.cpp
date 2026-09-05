@@ -39,6 +39,7 @@ bool s_dirty = true;        // 需要重绘
 bool s_needClear = true;    // 重绘前整屏清底(切页/关弹窗后)
 uint32_t s_lastRenderMs = 0;
 uint16_t s_lastMinute = 0xFFFF;
+int8_t s_demoLrcRow = -1;   // 演示版当前歌词行(变了才重绘音乐页文字区)
 
 // 偏好(NVS)
 uint8_t s_bright = 72, s_specStyle = 0, s_wxStyle = 0;
@@ -282,6 +283,8 @@ void pageClock(float dt) {
 constexpr int MU_CX = 88, MU_CY = 100, MU_CR = 42;   // 圆封面
 constexpr int MU_TXTX = 162, MU_TXTW = 148;          // 右侧文字栏
 constexpr int MU_BTNCY = 178, MU_BTNGAP = 44;        // 三个圆形传输键
+// disc Sprite 在屏幕上的位置:圆盘(±62)+三个键(下到 200)的包围盒
+constexpr int MU_DISC_X = 26, MU_DISC_Y = 36;
 
 // 环上分格数:16 段镜像成 32,环才匀(同预览 SPEC_N)
 constexpr int SPEC_N = 32;
@@ -298,13 +301,18 @@ inline float ringAngle(int i) {
  * 3 种样式都画在这个环上,上下滑切换。同预览 specRing。
  * 背景是纯底色,擦除靠调用方先清区域。
  */
-void specRing(int cx, int cy, int r, int style) {
+/**
+ * 环形音波:16 段沿封面圆盘外圈跳动(数据来自 BLE 的 SPEC 帧)。
+ * 3 种样式都画在这个环上,上下滑切换。同预览 specRing。
+ * 背景是纯底色,擦除靠调用方先清区域。t 可以是屏幕或 disc Sprite。
+ */
+void specRing(TFT_eSPI& t, int cx, int cy, int r, int style) {
   if (style == 0) {
     // 放射条:一根根向外跳
     for (int i = 0; i < SPEC_N; ++i) {
       const float a = ringAngle(i), v = specAt(i);
       const float r1 = r + 3.0f + v * 17.0f;
-      tft.drawWideLine(cx + cosf(a) * r, cy + sinf(a) * r,
+      t.drawWideLine(cx + cosf(a) * r, cy + sinf(a) * r,
                        cx + cosf(a) * r1, cy + sinf(a) * r1, 3.0f,
                        TH::neon((uint8_t)(v * 255.0f)), TH::BG);
     }
@@ -315,14 +323,14 @@ void specRing(int cx, int cy, int r, int style) {
       const int k = i % SPEC_N;
       const float a = ringAngle(k), rr = r + 4.0f + specAt(k) * 16.0f;
       const float x = cx + cosf(a) * rr, y = cy + sinf(a) * rr;
-      if (i) tft.drawWideLine(px, py, x, y, 2.0f, TH::RED, TH::BG);
+      if (i) t.drawWideLine(px, py, x, y, 2.0f, TH::RED, TH::BG);
       px = x; py = y;
     }
     // 峰点点缀
     for (int i = 0; i < SPEC_N; i += 4) {
       const float a = ringAngle(i), v = specAt(i);
       const float rr = r + 4.0f + v * 16.0f;
-      tft.fillSmoothCircle(cx + cosf(a) * rr, cy + sinf(a) * rr, 2,
+      t.fillSmoothCircle(cx + cosf(a) * rr, cy + sinf(a) * rr, 2,
                            TH::neon((uint8_t)(v * 255.0f)), TH::BG);
     }
   } else {
@@ -333,10 +341,10 @@ void specRing(int cx, int cy, int r, int style) {
       // 无 alpha:用向底色淡出近似预览的 .35+v*.65 透明度
       const uint16_t c = lerp565(TH::BG, TH::neon((uint8_t)(v * 255.0f)),
                                  (uint8_t)((0.35f + v * 0.65f) * 255.0f));
-      tft.fillSmoothCircle(cx + cosf(a) * rr, cy + sinf(a) * rr,
+      t.fillSmoothCircle(cx + cosf(a) * rr, cy + sinf(a) * rr,
                            (int)(1.6f + v * 2.4f + 0.5f), c, TH::BG);
     }
-    tft.drawSmoothArc(cx, cy, r + 1, r, 0, 360,
+    t.drawSmoothArc(cx, cy, r + 1, r, 0, 360,
                       lerp565(TH::BG, TH::GOLD_DK, 204), TH::BG, false);
   }
 }
@@ -346,42 +354,52 @@ void specRing(int cx, int cy, int r, int style) {
  * 同预览 coverDisc。spin 是虚线环自转角度(度)。
  * 频谱走环形样式时不画虚线环(dashRing=false),让位给音波。
  */
-void coverDisc(int cx, int cy, int r, float spin, bool dashRing) {
+void coverDisc(TFT_eSPI& t, int cx, int cy, int r, float spin, bool dashRing) {
   if (dashRing) {
     constexpr int SEG = 22;
     for (int i = 0; i < SEG; ++i) {
       const float a0 = i * (360.0f / SEG) + spin;
-      tft.drawSmoothArc(cx, cy, r + 7, r + 3, (int)a0,
+      t.drawSmoothArc(cx, cy, r + 7, r + 3, (int)a0,
                         (int)(a0 + 360.0f / SEG * 0.6f),
                         (i % 2) ? TH::ACCENT : TH::RED_DK, TH::BG, false);
     }
   }
   // 盘面:浅黄底
-  tft.fillSmoothCircle(cx, cy, r, TH::GOLD_DK, TH::BG);
-  // 盘里装皮卡丘的头(3× 放大,按眼鼻行对中),裁在圆内
-  tft.setViewport(cx - r + 1, cy - r + 1, (r - 1) * 2, (r - 1) * 2);
-  Pika::drawHead(tft, cx - 15 * 3, cy - 9 * 3, 3);
-  tft.resetViewport();
-  tft.drawSmoothCircle(cx, cy, r, TH::ACCENT, TH::GOLD_DK);
+  t.fillSmoothCircle(cx, cy, r, TH::GOLD_DK, TH::BG);
+  // 盘里装皮卡丘的头(BODY 24×20 精灵px,3× = 72×60),居中放,裁在圆内
+  t.setViewport(cx - r + 1, cy - r + 1, (r - 1) * 2, (r - 1) * 2);
+  Pika::drawHead(t, cx - 36, cy - 30, 3);
+  t.resetViewport();
+  t.drawSmoothCircle(cx, cy, r, TH::ACCENT, TH::GOLD_DK);
 }
 
-void pageMusic(float dt) {
+/**
+ * pageMusic(dt, full):
+ *  - full=true  内容真变了(切页/歌名歌词/播放状态/按下态):重绘状态栏和
+ *    右侧文字栏。
+ *  - 每帧都做:圆盘+环形音波+三个键画进 disc Sprite 整块一次推送,
+ *    页脚草地滚动。不再整屏 fillRect —— 那是音乐页「一直闪」的根源
+ *    (每帧先全屏白一下再慢慢画内容)。
+ */
+void pageMusic(float dt, bool full) {
 #ifndef DEMO_MODE
   if (!g_media.connected) {
-    // 等手机来连 / 蓝牙关了。页脚草地要滚,所以这页也每帧重绘
-    const bool adv = g_media.advOn;
-    tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
-    statusBar("音乐", adv ? "广播中" : "蓝牙已关");
-    Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 82, 40,
-               adv ? TH::ACCENT : TH::TXT_LO, TH::BG);
-    Txt::drawCenter(SCR_W / 2, 124, CN16, TH::TXT_MID,
-                    adv ? "等手机来连" : "蓝牙已关闭");
-    Txt::drawCenter(SCR_W / 2, 143, NUM14, adv ? TH::ACCENT : TH::TXT_LO,
-                    "Pika-Music");
-    Txt::drawCenter(SCR_W / 2, 158, CN12, TH::TXT_LO,
-                    "手机打开配套 App,搜到名字点连接");
-    textBtn("m.btpanel", 96, 170, 128, 30, adv ? "蓝牙设置" : "开启蓝牙",
-            TH::ACCENT);
+    // 等手机来连 / 蓝牙关了:主体按需重绘,页脚每帧滚
+    if (full) {
+      const bool adv = g_media.advOn;
+      tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
+      statusBar("音乐", adv ? "广播中" : "蓝牙已关");
+      Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 82, 40,
+                 adv ? TH::ACCENT : TH::TXT_LO, TH::BG);
+      Txt::drawCenter(SCR_W / 2, 124, CN16, TH::TXT_MID,
+                      adv ? "等手机来连" : "蓝牙已关闭");
+      Txt::drawCenter(SCR_W / 2, 143, NUM14, adv ? TH::ACCENT : TH::TXT_LO,
+                      "Pika-Music");
+      Txt::drawCenter(SCR_W / 2, 158, CN12, TH::TXT_LO,
+                      "手机打开配套 App,搜到名字点连接");
+      textBtn("m.btpanel", 96, 170, 128, 30, adv ? "蓝牙设置" : "开启蓝牙",
+              TH::ACCENT);
+    }
     Scene::footer(tft, dt, TH::BG);
     pageDots(1, true);
     return;
@@ -392,76 +410,85 @@ void pageMusic(float dt) {
   const int pos = g_media.pos >= 0 ? g_media.pos : s_demoPos;
   const int dur = g_media.dur > 0 ? g_media.dur : DEMO_DUR;
 
-  // 环形音波每帧都在变,页脚草地也要滚 —— 这页整屏重绘(同预览)
-  tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
-  statusBar(playing ? "正在播放" : "已暂停",
-            g_media.peer[0] ? g_media.peer : "", false);
+  // ---- 主体(状态栏 + 右侧文字栏)只在内容变化时重绘 ----
+  if (full) {
+    tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
+    statusBar(playing ? "正在播放" : "已暂停",
+              g_media.peer[0] ? g_media.peer : "", false);
 
-  // ---- 圆封面当主角,音波沿盘外圈跳(BLE 的 SPEC);上下滑切 3 种环形样式 ----
-  specRing(MU_CX, MU_CY, MU_CR + 3, s_specStyle);
-  coverDisc(MU_CX, MU_CY, MU_CR, playing ? s_specPhase * 26.0f : 0.0f, false);
-
-  // ---- 歌名 / 歌手 / 歌词(当前行 + 后两行):封面右侧 ----
-  {
-    const char* ti = g_media.title[0] ? g_media.title : DEMO_TITLE;
-    const char* ar = g_media.artist[0] ? g_media.artist : DEMO_ARTIST;
-    char c[48];
-    Txt::clip(CN16, ti, MU_TXTW, c, sizeof(c));
-    Txt::draw(MU_TXTX, 62, CN16, TH::TXT_HI, c);
-    Txt::clip(CN12, ar, MU_TXTW, c, sizeof(c));
-    Txt::draw(MU_TXTX, 80, CN12, TH::TXT_MID, c);
-  }
-  Gfx::divider(tft, MU_TXTX, 92, MU_TXTW, TH::RIM, TH::BG);
-  {
+    // 歌名 / 歌手 / 歌词(当前行 + 后两行):封面右侧
+    {
+      const char* ti = g_media.title[0] ? g_media.title : DEMO_TITLE;
+      const char* ar = g_media.artist[0] ? g_media.artist : DEMO_ARTIST;
+      char c[48];
+      Txt::clip(CN16, ti, MU_TXTW, c, sizeof(c));
+      Txt::draw(MU_TXTX, 62, CN16, TH::TXT_HI, c);
+      Txt::clip(CN12, ar, MU_TXTW, c, sizeof(c));
+      Txt::draw(MU_TXTX, 80, CN12, TH::TXT_MID, c);
+    }
+    Gfx::divider(tft, MU_TXTX, 92, MU_TXTW, TH::RIM, TH::BG);
+    {
 #ifdef DEMO_MODE
-    const int li = (pos / 6) % 5;
-    const char* l0 = DEMO_LRC[li];
-    const char* l1 = DEMO_LRC[(li + 1) % 5];
-    const char* l2 = DEMO_LRC[(li + 2) % 5];
+      const int li = (pos / 6) % 5;
+      const char* l0 = DEMO_LRC[li];
+      const char* l1 = DEMO_LRC[(li + 1) % 5];
+      const char* l2 = DEMO_LRC[(li + 2) % 5];
 #else
-    // BLE 模式手机只推当前行,后两行留空
-    const char* l0 = g_media.lyric;
-    const char* l1 = "";
-    const char* l2 = "";
+      // BLE 模式手机只推当前行,后两行留空
+      const char* l0 = g_media.lyric;
+      const char* l1 = "";
+      const char* l2 = "";
 #endif
-    char c[48];
-    if (l0[0]) {
-      Txt::clip(CN12, l0, MU_TXTW, c, sizeof(c));
-      Txt::draw(MU_TXTX, 112, CN12, TH::RED, c);
-    }
-    if (l1[0]) {
-      Txt::clip(CN12, l1, MU_TXTW, c, sizeof(c));
-      Txt::draw(MU_TXTX, 128, CN12, TH::TXT_LO, c);
-    }
-    if (l2[0]) {
-      Txt::clip(CN12, l2, MU_TXTW, c, sizeof(c));
-      Txt::draw(MU_TXTX, 143, CN12, TH::TXT_LO, c);
+      char c[48];
+      if (l0[0]) {
+        Txt::clip(CN12, l0, MU_TXTW, c, sizeof(c));
+        Txt::draw(MU_TXTX, 112, CN12, TH::RED, c);
+      }
+      if (l1[0]) {
+        Txt::clip(CN12, l1, MU_TXTW, c, sizeof(c));
+        Txt::draw(MU_TXTX, 128, CN12, TH::TXT_LO, c);
+      }
+      if (l2[0]) {
+        Txt::clip(CN12, l2, MU_TXTW, c, sizeof(c));
+        Txt::draw(MU_TXTX, 143, CN12, TH::TXT_LO, c);
+      }
     }
   }
 
-  // ---- 3 个圆形传输键:上一曲 / 播放(大) / 下一曲,横排在封面下方 ----
-  // 主键实心红大圆,副键描边小圆(同预览 roundBtn)
-  auto roundBtn = [](const char* id, int cx, int r, Glyph k, bool primary) {
+  // ---- 圆盘 + 环形音波 + 3 个传输键:画进 disc Sprite,整块一次推送 ----
+  // 背景是纯色 TH::BG,整块不透明覆盖,不会闪白也不留残影。
+  TFT_eSprite& d = Gfx::disc();
+  d.fillSprite(TH::BG);
+  specRing(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR + 3, s_specStyle);
+  coverDisc(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR,
+            playing ? s_specPhase * 26.0f : 0.0f, false);
+
+  // 3 个圆形传输键:上一曲 / 播放(大) / 下一曲,横排在封面下方。
+  // 主键实心红大圆,副键描边小圆(同预览 roundBtn)。画进 disc,热区照常注册。
+  auto roundBtn = [](TFT_eSPI& t, const char* id, int cx, int r, Glyph k,
+                     bool primary) {
     const int hitR = (r + 6 > 15) ? r + 6 : 15;
     hitAdd(id, cx - hitR, MU_BTNCY - hitR, hitR * 2, hitR * 2);
     const bool down = hitIsPressed(id);
     if (primary) {
-      Gfx::glow(tft, cx, MU_BTNCY, r, TH::RED, TH::BG);
+      Gfx::glow(t, cx, MU_BTNCY, r, TH::RED, TH::BG);
       const uint16_t fill = down ? TH::ACCENT : TH::RED;
-      tft.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
-      Gfx::glyph(tft, k, cx, MU_BTNCY, r,
+      t.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
+      Gfx::glyph(t, k, cx, MU_BTNCY, r,
                  down ? TH::TXT_HI : hex565(0xFFFBF0), fill);
     } else {
       const uint16_t fill = down ? TH::GOLD_DK : TH::CARD;
-      tft.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
-      tft.drawSmoothCircle(cx, MU_BTNCY, r, down ? TH::ACCENT : TH::RIM, fill);
-      Gfx::glyph(tft, k, cx, MU_BTNCY, (int)(r * 0.92f),
+      t.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
+      t.drawSmoothCircle(cx, MU_BTNCY, r, down ? TH::ACCENT : TH::RIM, fill);
+      Gfx::glyph(t, k, cx, MU_BTNCY, (int)(r * 0.92f),
                  down ? TH::TXT_HI : TH::TXT_MID, fill);
     }
   };
-  roundBtn("m.prev", SCR_W / 2 - MU_BTNGAP, 14, GL_PREV, false);
-  roundBtn("m.play", SCR_W / 2, 20, playing ? GL_PAUSE : GL_PLAY, true);
-  roundBtn("m.next", SCR_W / 2 + MU_BTNGAP, 14, GL_NEXT, false);
+  roundBtn(d, "m.prev", SCR_W / 2 - MU_BTNGAP - MU_DISC_X, 14, GL_PREV, false);
+  roundBtn(d, "m.play", SCR_W / 2 - MU_DISC_X, 20, playing ? GL_PAUSE : GL_PLAY,
+           true);
+  roundBtn(d, "m.next", SCR_W / 2 + MU_BTNGAP - MU_DISC_X, 14, GL_NEXT, false);
+  Gfx::pushDisc(MU_DISC_X, MU_DISC_Y);
 
   Scene::footer(tft, dt, TH::BG);
   pageDots(1, true);
@@ -982,8 +1009,10 @@ void render(float dt, bool contentChanged) {
   //   时钟页 —— 场景自己覆盖整屏,不清
   //   音乐页 —— 每帧自己清主体区(环形音波每帧全变)
   //   其余三页 —— 主体只在内容变化时重绘(s_needClear);每帧只重画滚动的页脚
+  // 时钟页每帧全画(场景动画);音乐页/静态页主体只在内容变化时重绘
+  // (音乐页的圆盘+音波每帧由 disc Sprite 整体推送,不依赖这里的 redrawBody)
   const bool statics = (s_page != PG_CLOCK && s_page != PG_MUSIC);
-  const bool redrawBody = !statics || s_needClear || contentChanged;
+  const bool redrawBody = (s_page == PG_CLOCK) || s_needClear || contentChanged;
   // 热区由页面绘制时注册,所以只在真要重绘主体时才清 ——
   // 静态页「只刷页脚」的那些帧必须保留上一帧的热区表,否则按钮会失灵。
   if (redrawBody) hitClear();
@@ -994,7 +1023,7 @@ void render(float dt, bool contentChanged) {
   s_needClear = false;
   switch (s_page) {
     case PG_CLOCK: pageClock(dt); break;
-    case PG_MUSIC: pageMusic(dt); break;
+    case PG_MUSIC: pageMusic(dt, redrawBody); break;
     case PG_WEATHER: if (redrawBody) pageWeather(dt); break;
     case PG_DATE: if (redrawBody) pageDate(dt); break;
     case PG_SETTINGS: if (redrawBody) pageSettings(dt); break;
@@ -1120,6 +1149,12 @@ void service(float dt) {
       if (++s_demoPos >= DEMO_DUR) s_demoPos = 0;
     }
     g_media.pos = s_demoPos;
+    // 歌词行切了 → 重绘右侧文字区(音乐页主体按需重绘)
+    const int dlr = (s_demoPos / 6) % 5;
+    if (dlr != s_demoLrcRow) {
+      s_demoLrcRow = (int8_t)dlr;
+      s_dirty = true;
+    }
   }
   tickSpecDemo(dt);
 #else

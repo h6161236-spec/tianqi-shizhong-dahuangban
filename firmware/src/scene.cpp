@@ -11,6 +11,7 @@
 #include "theme.h"
 
 #include <math.h>
+#include <string.h>
 
 namespace {
 
@@ -161,6 +162,107 @@ float g_clock = 0.0f;   // 场景累计时钟(秒)
 const int CLOUD_SPR[8][2] = {{8, 10}, {6, 14}, {4, 18}, {2, 22},
                              {0, 24}, {0, 24}, {2, 22}, {4, 20}};
 
+// ---------------------------------------------------------------- 缓存模式
+// 无雨/雪/闪电/冻雨的天气下,「天空带 / 远山 / 地面基色」只在小时或天气组
+// 变化时重画(它们本来就不动);每帧只重画动的东西:云(恢复旧区+画新)、
+// 星(闪烁)、天体(位置缓变才重画)、草丛带、皮卡丘。SPI 写入从每帧 ~110KB
+// 降到 ~30KB,时钟页的「边擦边画闪烁」随之消失。
+constexpr int SKY_BANDS = (HORIZON - SCENE_TOP) / 2;   // 85 条 2px 带
+uint32_t g_skyRow24[SKY_BANDS];   // 每条带的 24bit 混色(供天体/星混色取样)
+uint16_t g_skyRow16[SKY_BANDS];   // 对应 RGB565(与屏上像素比对用)
+bool     g_skyInit = false;
+bool     g_bgValid = false;       // 背景(远山/地面基色)是否已画
+Scene::Group g_bgGrp = (Scene::Group)0xFF;
+float    g_bgNight = -1.0f;
+
+struct CloudPos { float x, y, w; bool valid; };
+CloudPos g_cloudOld[6] = {};
+float    g_bodyOldX = -999.0f, g_bodyOldY = -999.0f;
+bool     g_bodyWasSun = true, g_bodyValid = false;
+struct FogPos { float x, y; bool valid; };
+FogPos   g_fogOld[3] = {};
+
+/** 场景内 y 行的天空 24bit 色,直接取缓存带(与屏上已画的一致) */
+inline uint32_t skyAtCache(float y) {
+  int idx = ((int)y - SCENE_TOP) / 2;
+  if (idx < 0) idx = 0;
+  if (idx >= SKY_BANDS) idx = SKY_BANDS - 1;
+  return g_skyRow24[idx];
+}
+
+/**
+ * 把一个矩形区域恢复成「天空色 + 该处的星 + (若盖到)天体」。
+ * 云/雾/天体旧区移动后,屏幕上的旧像素必须按这个顺序补回来,
+ * 才不会留下残影或把被盖住的星/天体挖掉。
+ */
+void restoreSkyArea(TFT_eSPI& t, int x, int y, int w, int h, float hourF,
+                    float night, float moonPh) {
+  if (w <= 0 || h <= 0) return;
+  // 1. 恢复天空色(逐 2px 带,带高裁剪到区域内)
+  for (int yy = y; yy < y + h; yy += 2) {
+    const int idx = (yy - SCENE_TOP) / 2;
+    if (idx < 0 || idx >= SKY_BANDS) continue;
+    int hh = yy + 2;
+    if (hh > y + h) hh = y + h;
+    t.fillRect(x, yy, w, hh - yy, g_skyRow16[idx]);
+  }
+  // 2. 重画落在区域内的星(之前被云/雾/天体擦掉,或本来就在它们下面)
+  if (night > 0.35f) {
+    const float saBase = powf(night, 1.4f);
+    for (const auto& s : STARS) {
+      const int sx = (int)s.x, sy = (int)s.y;
+      if (sx < x || sx >= x + w || sy < y || sy >= y + h) continue;
+      // 被天体盖住的星不用画
+      if (g_bodyValid && sx >= g_bodyOldX - 24 && sx <= g_bodyOldX + 24 &&
+          sy >= g_bodyOldY - 24 && sy <= g_bodyOldY + 24)
+        continue;
+      const float tw = 0.55f + 0.45f * sinf(g_clock * (1.2f + s.s) + s.ph);
+      const float a = saBase * tw;
+      if (a < 0.05f) continue;
+      t.fillRect(sx, sy, s.s, s.s, c565(mix3(skyAtCache(s.y), 0xF5F2E8, a)));
+    }
+  }
+  // 3. 区域盖到天体 → 擦掉天体旧区(天空)再重画
+  if (g_bodyValid) {
+    const float br = g_bodyWasSun ? 23.0f : 16.0f;
+    const int lx = (int)(g_bodyOldX - br), ly = (int)(g_bodyOldY - br);
+    const int lw = (int)(br * 2), lh = (int)(br * 2);
+    if (lx + lw > x && lx < x + w && ly + lh > y && ly < y + h) {
+      for (int yy = ly; yy < ly + lh; yy += 2) {
+        const int idx = (yy - SCENE_TOP) / 2;
+        if (idx < 0 || idx >= SKY_BANDS) continue;
+        t.fillRect(lx, yy, lw, 2, g_skyRow16[idx]);
+      }
+      // 天体本体(太阳/月亮),取样色用缓存带
+      if (g_bodyWasSun && night < 0.6f) {
+        const bool warm = (hourF < 8.0f || hourF > 16.5f);
+        const uint32_t core = warm ? 0xFFB53Au : 0xFFDD46u;
+        const uint32_t sky = skyAtCache(g_bodyOldY);
+        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 20,
+                     c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f), 0.12f + night * 0.1f)));
+        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 14,
+                     c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
+        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
+      } else if (!g_bodyWasSun && night > 0.4f) {
+        const float ph = (moonPh < 0.0f) ? 0.5f : moonPh;
+        const int r = 8;
+        const uint32_t sky = skyAtCache(g_bodyOldY);
+        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, r + 7,
+                     c565(mix3(sky, 0xC8D4E8, 0.1f)));
+        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, r, c565(0xEEEDE0));
+        const float illum = 1.0f - fabsf(ph - 0.5f) * 2.0f;
+        const float off = (ph < 0.5f ? -1.0f : 1.0f) * (1.0f - illum) * 2.2f * r;
+        t.fillCircle((int)(g_bodyOldX + off), (int)g_bodyOldY, r - 1,
+                     c565(mix3(sky, 0x121A34, 0.8f)));
+        const uint16_t cr = c565(0xD8D4C4);
+        t.fillCircle((int)g_bodyOldX - 2, (int)g_bodyOldY - 2, 1, cr);
+        t.fillCircle((int)g_bodyOldX + 3, (int)g_bodyOldY + 1, 1, cr);
+        t.fillCircle((int)g_bodyOldX - 1, (int)g_bodyOldY + 3, 1, cr);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 namespace Scene {
@@ -228,12 +330,356 @@ uint16_t groundColor(float hourF, Group g) {
   return c565(dirtColor24(hourF, params(g)));
 }
 
+/**
+ * 缓存模式绘制(仅无雨/雪/闪电/冻雨的天气组,见 draw 入口的判断)。
+ *
+ * 背景层(天空带/远山/地面基色/地平线)只在首次、天气组变化、夜色浓度
+ * 明显变化时重画 —— 它们本来就不动,每帧重画纯粹烧 SPI 带宽、还制造
+ * 「边擦边画」的闪烁。每帧只重画真正在动的东西:
+ *   云(恢复旧区→画新)、星(闪烁)、天体(位置缓变才重画)、草丛带、皮卡丘。
+ * 恢复旧区用 restoreSkyArea:先补天空色,再补被盖住的星/天体,不留残影。
+ */
+void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
+                float night, float dt, float moonPh, bool withPika) {
+  const int skyH = HORIZON - SCENE_TOP;
+  if (!g_skyInit) {
+    memset(g_skyRow16, 0xFF, sizeof(g_skyRow16));
+    g_skyInit = true;
+  }
+
+  const bool bgInvalid = !g_bgValid || g != g_bgGrp ||
+                         fabsf(night - g_bgNight) > 0.03f;
+
+  // ---- 1. 天空带:行缓存,只重画颜色变了的行(平时 0 行,0 写入) ----
+  uint32_t top, bot;
+  skyMods(hourF, p, top, bot);
+  bool bodyDirty = false;   // 有行重画撞到天体盒 → 天体要补重画
+  for (int i = 0; i < skyH; i += 2) {
+    const uint32_t c24 = mix3(top, bot, (float)i / skyH);
+    const uint16_t cc = c565(c24);
+    const int idx = i / 2;
+    if (bgInvalid || cc != g_skyRow16[idx]) {
+      t.fillRect(0, SCENE_TOP + i, 320, 2, cc);
+      g_skyRow16[idx] = cc;
+      g_skyRow24[idx] = c24;
+      if (g_bodyValid) {
+        const float ry = (float)(SCENE_TOP + i);
+        if (ry >= g_bodyOldY - 24.0f && ry <= g_bodyOldY + 24.0f)
+          bodyDirty = true;
+      }
+    }
+  }
+  g_bgGrp = g;
+  g_bgNight = night;
+  g_bgValid = true;
+
+  // ---- 2. 天体:位置缓变,移动超过阈值(或天空行动了)才重画 ----
+  float pb;
+  if (hourF >= 6.0f && hourF < 18.0f) pb = (hourF - 6.0f) / 12.0f;
+  else if (hourF >= 18.0f) pb = (hourF - 18.0f) / 12.0f;
+  else pb = (hourF + 6.0f) / 12.0f;
+  if (pb < 0.0f) pb = 0.0f;
+  if (pb > 1.0f) pb = 1.0f;
+  const float bx = 36.0f + pb * 248.0f;
+  const float by = 102.0f - sinf(PI * pb) * 66.0f;
+  const bool isSun = (hourF >= 6.0f && hourF < 18.0f);
+  const float bodyMove = g_bodyValid
+      ? fabsf(bx - g_bodyOldX) + fabsf(by - g_bodyOldY) : 1e9f;
+  if (bgInvalid || bodyDirty || bodyMove > 1.0f || isSun != g_bodyWasSun) {
+    if (g_bodyValid && !bgInvalid && !bodyDirty) {
+      // 擦旧天体区(天空 + 其下星)再画新位置
+      const float br = g_bodyWasSun ? 23.0f : 16.0f;
+      restoreSkyArea(t, (int)(g_bodyOldX - br), (int)(g_bodyOldY - br),
+                     (int)(br * 2), (int)(br * 2), hourF, night, moonPh);
+    } else if (bgInvalid || bodyDirty) {
+      // 背景重画过 / 行重画擦过天体 → 擦+重画同一位置
+      const float br = g_bodyWasSun ? 23.0f : 16.0f;
+      if (g_bodyValid) {
+        for (int yy = (int)(g_bodyOldY - br); yy < (int)(g_bodyOldY + br);
+             yy += 2) {
+          const int idx = (yy - SCENE_TOP) / 2;
+          if (idx < 0 || idx >= SKY_BANDS) continue;
+          t.fillRect((int)(g_bodyOldX - br), yy, (int)(br * 2), 2,
+                     g_skyRow16[idx]);
+        }
+      }
+    }
+    // 画新天体
+    const uint32_t sky = skyAtCache(by);
+    if (isSun && night < 0.6f) {
+      const bool warm = (hourF < 8.0f || hourF > 16.5f);
+      const uint32_t core = warm ? 0xFFB53Au : 0xFFDD46u;
+      t.fillCircle((int)bx, (int)by, 20,
+                   c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f),
+                             0.12f + night * 0.1f)));
+      t.fillCircle((int)bx, (int)by, 14,
+                   c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
+      t.fillCircle((int)bx, (int)by, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
+      if (p.clouds < 0.8f) {
+        const uint16_t rayC = c565(mix3(sky, core, 0.75f));
+        for (int i = 0; i < 8; ++i) {
+          const float a = i * PI / 4.0f + g_clock * 0.1f;
+          t.drawLine((int)(bx + cosf(a) * 12.0f),
+                     (int)(by + sinf(a) * 12.0f),
+                     (int)(bx + cosf(a) * 16.0f),
+                     (int)(by + sinf(a) * 16.0f), rayC);
+          t.drawLine((int)(bx + cosf(a) * 12.0f) + 1,
+                     (int)(by + sinf(a) * 12.0f),
+                     (int)(bx + cosf(a) * 16.0f) + 1,
+                     (int)(by + sinf(a) * 16.0f), rayC);
+        }
+      }
+    } else if (!isSun && night > 0.4f) {
+      const float ph = (moonPh < 0.0f) ? 0.5f : moonPh;
+      const int r = 8;
+      t.fillCircle((int)bx, (int)by, r + 7, c565(mix3(sky, 0xC8D4E8, 0.1f)));
+      t.fillCircle((int)bx, (int)by, r, c565(0xEEEDE0));
+      const float illum = 1.0f - fabsf(ph - 0.5f) * 2.0f;
+      const float off =
+          (ph < 0.5f ? -1.0f : 1.0f) * (1.0f - illum) * 2.2f * r;
+      t.fillCircle((int)(bx + off), (int)by, r - 1,
+                   c565(mix3(sky, 0x121A34, 0.8f)));
+      const uint16_t cr = c565(0xD8D4C4);
+      t.fillCircle((int)bx - 2, (int)by - 2, 1, cr);
+      t.fillCircle((int)bx + 3, (int)by + 1, 1, cr);
+      t.fillCircle((int)bx - 1, (int)by + 3, 1, cr);
+    }
+    g_bodyOldX = bx;
+    g_bodyOldY = by;
+    g_bodyWasSun = isSun;
+    g_bodyValid = true;
+  }
+
+  // ---- 3. 星:每帧恢复+重画(闪烁)。天体盒内的星被天体盖着,跳过 ----
+  if (night > 0.35f) {
+    const float saBase = powf(night, 1.4f);
+    for (const auto& s : STARS) {
+      const int sx = (int)s.x, sy = (int)s.y;
+      if (g_bodyValid && sx >= g_bodyOldX - 24 && sx <= g_bodyOldX + 24 &&
+          sy >= g_bodyOldY - 24 && sy <= g_bodyOldY + 24)
+        continue;
+      int sidx = (sy - SCENE_TOP) / 2;
+      if (sidx < 0) sidx = 0;
+      if (sidx >= SKY_BANDS) sidx = SKY_BANDS - 1;
+      const uint16_t skyC = g_skyRow16[sidx];
+      const float tw = 0.55f + 0.45f * sinf(g_clock * (1.2f + s.s) + s.ph);
+      const float a = saBase * tw;
+      t.fillRect(sx, sy, s.s, s.s, skyC);   // 恢复
+      if (a >= 0.05f) t.fillRect(sx, sy, s.s, s.s,
+                                 c565(mix3(skyAtCache(s.y), 0xF5F2E8, a)));
+    }
+  }
+
+  // ---- 4. 云:恢复旧区 + 画新云 ----
+  const int cloudN = (int)(p.clouds * 6.0f + 0.5f);
+  const float cSpeed = (3.0f + p.wind * 16.0f);
+  const uint32_t cloudLight = mix3(0xFFFFFF, 0x5E646C, p.dark);
+  const uint32_t cloudDarkU =
+      mix3(0xD9DCE2, 0x3A4048, p.dark + 0.2f > 1.0f ? 1.0f : p.dark + 0.2f);
+  for (int i = 0; i < cloudN; ++i) {
+    const int band = i % 3;
+    const float baseX = fmodf((float)(i * 137.5), 340.0f) - 10.0f;
+    float cx = fmodf(baseX - g_clock * cSpeed * (0.5f + band * 0.35f), 340.0f);
+    if (cx < 0.0f) cx += 340.0f;
+    cx -= 10.0f;
+    const float cy = 52.0f + band * 26.0f + (i & 1) * 6.0f;
+    const float cw = 30.0f + (i % 3) * 14.0f;
+    const uint32_t cc = (band == 0) ? cloudDarkU : cloudLight;
+    const float alpha = (band == 0) ? 0.95f : 0.8f;
+    const uint32_t sky = skyAtCache(cy + 4.0f);
+    const uint16_t col = c565(mix3(sky, cc, alpha));
+    // 恢复旧区(天空 + 被盖的星/天体)
+    if (g_cloudOld[i].valid) {
+      restoreSkyArea(t, (int)g_cloudOld[i].x, (int)g_cloudOld[i].y,
+                     (int)g_cloudOld[i].w + 6, 12, hourF, night, moonPh);
+    }
+    for (int ri = 0; ri < 8; ++ri) {
+      const int rw = (int)(cw * CLOUD_SPR[ri][1] / 24.0f);
+      const int rxOff =
+          (int)((cw - (rw < 3 ? 3 : rw)) / 2.0f + CLOUD_SPR[ri][0] * 0.5f);
+      const int rh = (int)(cw / 26.0f);
+      const int r2 = (int)(rh * 0.55f);
+      t.fillRoundRect((int)cx + rxOff, (int)cy + ri * (rh < 2 ? 2 : rh),
+                      rw < 3 ? 3 : rw, rh < 2 ? 2 : rh, r2 < 1 ? 1 : r2, col);
+    }
+    g_cloudOld[i] = {cx, cy, cw, true};
+  }
+  for (int i = cloudN; i < 6; ++i) {
+    if (g_cloudOld[i].valid) {
+      restoreSkyArea(t, (int)g_cloudOld[i].x, (int)g_cloudOld[i].y,
+                     (int)g_cloudOld[i].w + 6, 12, hourF, night, moonPh);
+      g_cloudOld[i].valid = false;
+    }
+  }
+
+  // ---- 5. 雾:恢复旧区 + 画新雾(淡雾椭圆,移动慢) ----
+  if (p.fog > 0.05f) {
+    for (int i = 0; i < 3; ++i) {
+      const float fy = 70.0f + i * 46.0f;
+      const float fx = fmodf(g_clock * (2.0f + i), 60.0f) - 30.0f;
+      const float ecx =
+          160.0f + sinf(g_clock * 0.3f + i) * 40.0f + fx * 0.3f;
+      if (g_fogOld[i].valid) {
+        restoreSkyArea(t, (int)g_fogOld[i].x - 108, (int)g_fogOld[i].y - 7,
+                       216, 15, hourF, night, moonPh);
+      }
+      const uint32_t bg = skyAtCache(fy);
+      t.fillEllipse((int)ecx, (int)fy, 210, 13,
+                    c565(mix3(bg, 0xC5C1B2, p.fog * 0.38f)));
+      g_fogOld[i] = {ecx, fy, true};
+    }
+  } else {
+    for (int i = 0; i < 3; ++i) {
+      if (g_fogOld[i].valid) {
+        restoreSkyArea(t, (int)g_fogOld[i].x - 108, (int)g_fogOld[i].y - 7,
+                       216, 15, hourF, night, moonPh);
+        g_fogOld[i].valid = false;
+      }
+    }
+  }
+
+  // ---- 6. 远山 + 地面基色 + 地平线(仅失效时;平时被 7/8 的恢复保持) ----
+  const float snowCover = snowCoverOf(p);
+  if (bgInvalid) {
+    const uint32_t hillC = mix3(mix3(0x4E8230, 0x2E4A5E, night * 0.7f),
+                                0xE8E6DC, p.snow > 0.0f ? 0.75f : 0.0f);
+    const uint32_t hillC2 = mix3(mix3(0x3E6A24, 0x22384C, night * 0.7f),
+                                 0xD8D6CE, p.snow > 0.0f ? 0.75f : 0.0f);
+    t.fillEllipse(70, HORIZON + 6, 120, 26, c565(hillC2));
+    t.fillEllipse(250, HORIZON + 10, 140, 30, c565(hillC));
+  }
+  const uint32_t grassC = mix3(0x5E9C3A, 0x24384E, night * 0.72f);
+  const uint32_t dirtC = dirtColor24(hourF, p);
+  if (bgInvalid) {
+    t.fillRect(0, HORIZON, 320, 10, c565(grassC));
+    t.fillRect(0, HORIZON + 10, 320, SCENE_BOT - HORIZON - 10, c565(dirtC));
+    t.fillRect(0, HORIZON, 320, 2,
+               c565(mix3(mix3(0x6EB044, 0x2E4458, night * 0.6f), 0xF2F0E8,
+                         snowCover * 0.8f)));
+  }
+
+  // ---- 7. 草丛带:整带每帧重画(滚动),先擦基色再画草 ----
+  advanceGround(dt);
+  t.fillRect(0, HORIZON, 320, 10, c565(grassC));
+  t.fillRect(0, HORIZON + 10, 320, 8, c565(dirtC));
+  const uint32_t tuftC = (snowCover > 0.5f)
+      ? mix3(0xF2F0E8, 0xFFFFFF, 0.3f)
+      : mix3(mix3(0x4E8A2E, 0x22362C, night * 0.7f), 0xFFFFFF, snowCover);
+  for (const auto& tf : TUFTS) {
+    const int tx = (int)tf.x;
+    if (tx < -8 || tx > 320) continue;
+    const float sway =
+        (p.wind > 0.5f) ? sinf(g_clock * 6.0f + tf.x * 0.3f) : 0.0f;
+    const uint16_t tc = c565(tuftC);
+    t.fillRect(tx, HORIZON + 4 + (tx % 7), 2, tf.h * 2, tc);
+    t.fillRect(tx + 2 + (int)sway, HORIZON + 3 + (tx % 5), 2, tf.h * 2 + 2, tc);
+    t.fillRect(tx + 1 + (int)(sway * 0.5f), HORIZON + 6 + (tx % 11), 2,
+               tf.h * 2 - 2, tc);
+  }
+
+  // ---- 8. 皮卡丘区:每次恢复包围区背景(天空/草/dirt + 区内草丛 + 相交雾) ----
+  if (withPika) {
+    constexpr int PK_X = (320 - Pika::PK_W) / 2;      // 136
+    constexpr int PK_Y = HORIZON + 4 - Pika::PK_H;    // 146
+    Pika::setFrame((int)(g_groundRun / 22.0f * 4.0f) & 3);
+    const int bx0 = PK_X - 24;      // 112:含尾巴
+    const int by0 = PK_Y - 2;       // 144
+    const int bw = Pika::PK_W + Pika::TAIL_W + 2;     // 72
+    const int bh = Pika::PK_H + 22;                   // 68 → 144..212
+    // 天空段
+    for (int yy = by0; yy < HORIZON; yy += 2) {
+      const int idx = (yy - SCENE_TOP) / 2;
+      if (idx < 0 || idx >= SKY_BANDS) continue;
+      int hh = yy + 2;
+      if (hh > HORIZON) hh = HORIZON;
+      t.fillRect(bx0, yy, bw, hh - yy, g_skyRow16[idx]);
+    }
+    // 草段 + dirt 段
+    t.fillRect(bx0, HORIZON, bw, 10, c565(grassC));
+    t.fillRect(bx0, HORIZON + 10, bw, by0 + bh - HORIZON - 10, c565(dirtC));
+    // 区内草丛重画(上面的恢复把步骤 7 的草擦掉了)
+    for (const auto& tf : TUFTS) {
+      const int tx = (int)tf.x;
+      if (tx < bx0 - 8 || tx > bx0 + bw) continue;
+      const uint16_t tc = c565(tuftC);
+      t.fillRect(tx, HORIZON + 4 + (tx % 7), 2, tf.h * 2, tc);
+      t.fillRect(tx + 2, HORIZON + 3 + (tx % 5), 2, tf.h * 2 + 2, tc);
+      t.fillRect(tx + 1, HORIZON + 6 + (tx % 11), 2, tf.h * 2 - 2, tc);
+    }
+    // 相交的雾重画(第三条雾 fy=162±13 会盖到皮卡丘区天空)
+    if (p.fog > 0.05f) {
+      for (int i = 0; i < 3; ++i) {
+        const float fy = 70.0f + i * 46.0f;
+        if (fy + 13 < by0 || fy - 13 > HORIZON) continue;
+        const float fx = fmodf(g_clock * (2.0f + i), 60.0f) - 30.0f;
+        const float ecx =
+            160.0f + sinf(g_clock * 0.3f + i) * 40.0f + fx * 0.3f;
+        const uint32_t bg = skyAtCache(fy);
+        t.fillEllipse((int)ecx, (int)fy, 210, 13,
+                      c565(mix3(bg, 0xC5C1B2, p.fog * 0.38f)));
+      }
+    }
+    // 影子 / 尘 / 皮卡丘本体
+    float lift = 0.0f;
+    const float jp = Pika::jumpPhase();
+    if (jp >= 0.0f) lift = sinf(PI * jp) * 26.0f;
+    float shrink = 1.0f - lift / 40.0f;
+    if (shrink < 0.5f) shrink = 0.5f;
+    const int shadowR = (int)(Pika::PK_W * 0.42f * shrink + 0.5f);
+    t.fillEllipse(PK_X + Pika::PK_W / 2, PK_Y + 22 * Pika::PK_SC + 3,
+                  shadowR, 3, c565(mix3(grassC, 0x141C08, 0.3f)));
+    const uint16_t dustC = c565(
+        (snowCover > 0.4f)
+            ? 0xEAEAE2u
+            : mix3(mix3(0xB09068, 0x3A3226, night * 0.6f), 0xFFFFFF,
+                   snowCover * 0.6f));
+    const int pf = Pika::frame();
+    if (dt > 0.0f && lift == 0.0f && (pf == 0 || pf == 2) && g_dustN < 12 &&
+        fxRng() < 0.5f) {
+      Dust& d = DUST[g_dustN++];
+      d.x = PK_X + 5.0f;
+      d.y = PK_Y + Pika::PK_H - 1.0f;
+      d.vx = -16.0f - fxRng() * 14.0f;
+      d.vy = -5.0f - fxRng() * 8.0f;
+      d.life = 1.0f;
+    }
+    for (int i = g_dustN - 1; i >= 0; --i) {
+      Dust& d = DUST[i];
+      if (dt > 0.0f) {
+        // 先恢复旧位置(尘脚下的草/dirt 基色),再更新位置
+        const uint16_t bgC =
+            (d.y < HORIZON + 10) ? c565(grassC) : c565(dirtC);
+        t.fillRect((int)d.x - 1, (int)d.y - 1, 4, 4, bgC);
+        d.life -= 1.68f * dt;
+        if (d.life <= 0.0f) { DUST[i] = DUST[--g_dustN]; continue; }
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+        d.vy += 10.8f * dt;
+      } else if (d.life <= 0.0f) {
+        DUST[i] = DUST[--g_dustN];
+        continue;
+      }
+      const int s = (d.life > 0.6f) ? 2 : 1;
+      const uint8_t a = (uint8_t)(d.life * 0.5f * 255.0f);
+      t.fillRect((int)d.x, (int)d.y, s, s, lerp565(c565(dirtC), dustC, a));
+    }
+    Pika::draw(t, PK_X, PK_Y);
+  }
+}
+
 void draw(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
           bool withPika) {
   if (!g_staticsInit) initStatics();
   const Params& p = params(g);
   if (dt > 0.0f) g_clock += dt;
   const float night = nightness(hourF);
+
+  // 缓存模式:无雨/雪/闪电/冻雨时,背景层按需重画,每帧只画动的元素。
+  // 这是消除时钟页「边擦边画闪烁」的核心(SPI 写入 ~110KB → ~30KB/帧)。
+  if (p.rain <= 0.0f && p.snow <= 0.0f && p.bolt <= 0.0f && !p.ice) {
+    drawCached(t, hourF, g, p, night, dt, moonPh, withPika);
+    return;
+  }
 
   // ---- 天空底色(含阴天/雾/雷暴/冻雨调色) ----
   uint32_t top, bot;
