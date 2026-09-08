@@ -55,6 +55,18 @@ ESP32-2432S028(ESP32 + ILI9341 2.8 寸 320×240 触摸屏)的 5 页面桌面摆�
 - 数据源可切**真实 API**:浏览器直连 api.open-meteo.com 真拉 7 天预报(失败自动回退演示数据)
 - 音乐页频谱为模拟数据;真机走 BLE
 
+### 网页预览截图
+
+以下截图来自 `preview/ui.html`,保留了网页控制台和 3 倍放大的 320×240 设备画布:
+
+| 时钟 | 音乐 | 天气 |
+|---|---|---|
+| ![时钟](preview/screenshots/clock.png) | ![音乐](preview/screenshots/music.png) | ![天气](preview/screenshots/weather.png) |
+
+| 日期 | 设置 |
+|---|---|
+| ![日期](preview/screenshots/date.png) | ![设置](preview/screenshots/settings.png) |
+
 ## 与参考项目(E:\xiangmu\开发板)的关系
 
 复用其成熟部分,差异部分新做:
@@ -100,6 +112,7 @@ ESP32-2432S028(ESP32 + ILI9341 2.8 寸 320×240 触摸屏)的 5 页面桌面摆�
     │   ├── shots.ps1      批量截图 14 种状态 + 拼一张总览图 _shot/_sheet.png
     │   ├── pika-run.ps1   皮卡丘奔跑精灵设计自检(4 帧对照 + 2× 实尺寸)
     │   └── render-sprite.ps1  旧版趴姿精灵(已被 pika-run.ps1 取代,留档)
+    ├── screenshots/       网页预览截图
     ├── _shot/             截图产物(自检用,可随时删)
     ├── _pika/             早期参考素材(官方 GIF/PNG;ui.html 已不依赖任何图片)
     └── references/        调研资料 + 参考界面截图
