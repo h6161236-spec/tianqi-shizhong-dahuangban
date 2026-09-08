@@ -6,7 +6,7 @@
  *   - 时钟页 110ms 全帧重绘(场景动画),音乐页 100ms,其余按需重绘
  *   - canvas 半透明 → 向底色 lerp 的实色近似(问 Scene 要取样色)
  *   - 弹窗/键盘整屏米白接管(参考工程做法,不做半透明遮罩)
- *   - 音乐页文字带「变了才擦重画」,频谱/进度/按钮每帧画
+ *   - 音乐页文字带「变了才擦重画」,圆盘+音波每帧推 disc,三键按需画
  *   - 密码键盘复用 keyboard 模块(4×10,参考工程验证过)
  */
 
@@ -16,6 +16,7 @@
 #include <Preferences.h>
 #include <TFT_eSPI.h>
 
+#include "cities.h"
 #include "config.h"
 #include "gfx.h"
 #include "keyboard.h"
@@ -37,6 +38,7 @@ namespace {
 uint8_t s_page = PG_CLOCK;
 bool s_dirty = true;        // 需要重绘
 bool s_needClear = true;    // 重绘前整屏清底(切页/关弹窗后)
+bool s_clockHudDirty = true; // 时钟页 HUD(时间药丸/天气chip/状态条)重画
 uint32_t s_lastRenderMs = 0;
 uint16_t s_lastMinute = 0xFFFF;
 int8_t s_demoLrcRow = -1;   // 演示版当前歌词行(变了才重绘音乐页文字区)
@@ -55,7 +57,8 @@ enum ModalKind : uint8_t {
   MOD_CONNECTING,  // 正在连接(转圈)
   MOD_BT,          // 蓝牙面板
   MOD_RESET,
-  MOD_REBOOT
+  MOD_REBOOT,
+  MOD_CITY         // 选城市(自动定位 / 热门 / 省份 / 拼音)
 };
 ModalKind s_modal = MOD_NONE;
 int8_t s_modalSel = 0;      // 弹窗按钮的上下键焦点
@@ -63,6 +66,12 @@ uint8_t s_modalBtnN = 0;    // 本弹窗按钮数(焦点循环用)
 char s_connSsid[33] = "";   // 正在连的网
 uint32_t s_connStartMs = 0;
 bool s_scanWasDone = false;
+
+// 城市选择
+int8_t s_cityProv = -1;     // -1 顶层(自动+热门+省份),>=0 该省
+int16_t s_citySel = 0;
+char s_cityFilter[16] = ""; // 拼音过滤,空 = 不滤
+uint8_t s_kbWhy = 0;        // 0=WiFi 密码  1=城市拼音
 
 // toast
 char s_toast[48] = "";
@@ -112,33 +121,35 @@ void mmss(char* out, size_t n, int s) {
 }
 
 // ================================================================ 状态条
-void statusIcons(uint16_t bg) {
+void statusIcons(TFT_eSPI& target, uint16_t bg) {
   const bool online = WifiMgr::isConnected();
   const WiFiConfig* cfg = WifiMgr::getConfig();
   const uint16_t wifiC = online ? TH::GREEN
                        : (cfg->saved ? TH::AMBER : TH::TXT_LO);
   const uint16_t btC = (g_media.connected || g_media.advOn) ? TH::ACCENT
                                                             : TH::TXT_LO;
-  Gfx::glyph(tft, GL_BLUETOOTH, 296, 9, 13, btC, bg);
-  Gfx::glyph(tft, GL_WIFI, 278, 9, 13, wifiC, bg);
+  Gfx::glyph(target, GL_BLUETOOTH, 296, 9, 13, btC, bg);
+  Gfx::glyph(target, GL_WIFI, 278, 9, 13, wifiC, bg);
 }
 
 void statusBar(const char* left, const char* right, bool light = false) {
+  const uint16_t bg = light ? Scene::statusVeil(hourFNow(), curSceneGroup()) : TH::BG;
+  Gfx::beginStrip(bg);
+  TFT_eSprite& st = Gfx::strip();
   if (light) {
     // 时钟页:叠在场景上的暗纱条
-    const uint16_t veil = Scene::statusVeil(hourFNow(), curSceneGroup());
-    tft.fillRect(0, 0, SCR_W, 19, veil);
     Txt::draw(8, 13, CN12, hex565(0xF5F2E8), left);
-    statusIcons(veil);
+    statusIcons(st, bg);
     if (right && right[0])
       Txt::drawRight(272, 13, CN12, hex565(0xD8D4C4), right);
   } else {
     Txt::draw(8, 13, CN12, TH::TXT_MID, left);
-    statusIcons(TH::BG);
+    statusIcons(st, bg);
     if (right && right[0])
       Txt::drawRight(272, 13, CN12, TH::TXT_MID, right);
-    Gfx::divider(tft, 0, 18, SCR_W, TH::LINE, TH::BG);
+    Gfx::divider(st, 0, 18, SCR_W, TH::LINE, TH::BG);
   }
+  Gfx::pushStripH(0, 0, 19);
 }
 
 // ================================================================ 页点
@@ -181,19 +192,11 @@ void pageClock(float dt) {
   const int y = lt.tm_year + 1900, mo = lt.tm_mon + 1, dd = lt.tm_mday;
   LunarDate l = Lunar::fromSolar(y, mo, dd);
 
-  // 状态条(节日/节气放右侧)
+  // 状态条(节日/节气放右侧)画在场景之后,避免天空带盖住底 1px
   const char* fest = nullptr;
   if (l.valid) {
     fest = Lunar::festival(l, mo, dd);
     if (!fest) fest = Lunar::termToday(y, mo, dd);
-  }
-  if (timeValid()) {
-    char dateStr[20];
-    snprintf(dateStr, sizeof(dateStr), "%d月%d日 %s", mo, dd,
-             Lunar::weekName(lt.tm_wday));
-    statusBar(dateStr, fest, true);
-  } else {
-    statusBar("时间未同步", "配网后自动校时", true);
   }
 
   // 场景(时段×天气)。时间没同步时固定正午,画面不乱
@@ -209,73 +212,110 @@ void pageClock(float dt) {
     hitAdd("c.pika", px - 16, gy - 34, Pika::PK_W + 32, Pika::PK_H + 46);
   }
 
-  // ---- 大时间:药丸画进 big 精灵(数字 AA 只在纯色底上做),分区推送 ----
-  if (timeValid()) {
-    char hhmm[8];
-    snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lt.tm_hour, lt.tm_min);
-    const uint16_t skyC = Scene::skyPixel(hF, grp, 44);   // 药丸处的天空色
-    const uint16_t pill = lerp565(skyC, hex565(0x10142C), 115);
-    int digitW = 24;
-    int w = Gfx::timeWidth(hhmm, digitW, 38, 3);
-    if (w > 124) { digitW = 22; w = Gfx::timeWidth(hhmm, digitW, 38, 3); }
-    Gfx::beginBig(skyC);
-    Gfx::big().fillSmoothRoundRect(0, 0, 128, 48, 10, pill, skyC);
-    Gfx::bigTime(Gfx::big(), (128 - w) / 2, 5, hhmm, digitW, 38, 3, hex565(0xFDF9EC),
-                 hex565(0xF0EAD0), pill, true);
-    Gfx::pushBigRegion(6, 20, 128, 48, 0, 0);
-  }
-
-  // ---- 农历行(白字 + 暗影,直接叠场景) ----
-  {
-    char luna[48];
-    if (l.valid) {
-      char lt1[24];
-      Lunar::dateText(l, lt1, sizeof(lt1));
-      snprintf(luna, sizeof(luna), "%s · %s年", lt1, Lunar::zodiac(l.year));
-    } else {
-      snprintf(luna, sizeof(luna), "%d年%d月%d日", y, mo, dd);
-    }
-    const uint16_t sky75 = Scene::skyPixel(hF, grp, 78);
-    Txt::draw(14, 84, CN12, lerp565(sky75, hex565(0x101018), 96), luna);  // 影
-    Txt::draw(14, 83, CN12, hex565(0xF0EAD0), luna);
-  }
-
-  // ---- 天气 chip(磨砂白 = 天空色混白;点它跳天气页) ----
-  {
-    const Wx::Data& wx = Wx::data();
-    const uint16_t sky47 = Scene::skyPixel(hF, grp, 47);
-    const uint16_t fill = lerp565(sky47, hex565(0xFCFAF2), 199);
-    const uint16_t rim = lerp565(sky47, hex565(0x786E50), 90);
-    hitAdd("c.chip", 214, 22, 100, 50);
-    tft.fillSmoothRoundRect(214, 22, 100, 50, 9, fill, sky47);
-    tft.drawSmoothRoundRect(214, 22, 9, 7, 100, 50, rim, sky47);
-    Scene::Group igrp = grp;
-    if (igrp == Scene::GR_MOSTLY) igrp = Scene::GR_CLEAR;  // 基本晴画纯太阳
-    Gfx::wxIcon(tft, (WxIcon)igrp, 234, 40, 24, fill);
-    // 同预览:chip 里只写 "24°"(度号紧跟数字,不带 C)。CN12 里有 ° 字形
-    char tempS[8];
-    snprintf(tempS, sizeof(tempS), "%d", wx.temp);
-    const int tw = Txt::draw(252, 48, NUM22, TH::TXT_HI, tempS);
-    Txt::draw(tw, 48, CN12, TH::TXT_HI, "°");
-    char wtx[24];
-    Txt::clip(CN12, Wx::wmoText(wx.wmo), 56, wtx, sizeof(wtx));
-    Txt::draw(252, 62, CN12, TH::TXT_MID, wtx);
-  }
-
-  // ---- 未配网/离线角标(在线不画,画面干净) ----
+  // 热区每帧都要登记(时钟页每帧 hitClear)。HUD 本体只在变了才重画,
+  // 否则时间药丸/天气 chip 每帧 AA 重描会自己闪。
+  hitAdd("c.chip", 214, 22, 100, 50);
   {
     char badge[48];
-    const char* b = Wx::badgeText(badge, sizeof(badge));
-    if (b) {
-      const uint16_t groundC = Scene::groundColor(hF, grp);
-      hitAdd("c.net", 6, 222, 168, 20);
-      tft.fillSmoothRoundRect(6, 222, 168, 20, 9, lerp565(groundC, hex565(0x141008), 140),
-                              groundC);
-      Txt::draw(14, 236, CN12, Wx::data().demo ? TH::RED : TH::AMBER, b);
-    }
+    if (Wx::badgeText(badge, sizeof(badge))) hitAdd("c.net", 6, 222, 168, 20);
   }
 
-  pageDots(0, true);
+  static int s_hudHM = -1;
+  static uint8_t s_hudNightQ = 255;
+  static Scene::Group s_hudGrp = Scene::GR_COUNT;
+  const int hm = timeValid() ? (lt.tm_hour * 60 + lt.tm_min) : -2;
+  const uint8_t nq = (uint8_t)(Scene::nightness(hF) * 40.0f);
+  const bool hud = s_clockHudDirty || hm != s_hudHM || nq != s_hudNightQ ||
+                   grp != s_hudGrp;
+  if (hud) {
+    s_clockHudDirty = false;
+    s_hudHM = hm;
+    s_hudNightQ = nq;
+    s_hudGrp = grp;
+
+    if (timeValid()) {
+      char dateStr[20];
+      snprintf(dateStr, sizeof(dateStr), "%d月%d日 %s", mo, dd,
+               Lunar::weekName(lt.tm_wday));
+      statusBar(dateStr, fest, true);
+    } else {
+      statusBar("时间未同步", "配网后自动校时", true);
+    }
+
+    // ---- 大时间:药丸画进 big 精灵(数字 AA 只在纯色底上做),分区推送 ----
+    if (timeValid()) {
+      char hhmm[8];
+      snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lt.tm_hour, lt.tm_min);
+      const uint16_t skyC = Scene::skyPixel(hF, grp, 44);   // 药丸处的天空色
+      const uint16_t pill = lerp565(skyC, hex565(0x10142C), 115);
+      int digitW = 24;
+      int w = Gfx::timeWidth(hhmm, digitW, 38, 3);
+      if (w > 124) { digitW = 22; w = Gfx::timeWidth(hhmm, digitW, 38, 3); }
+      Gfx::beginBig(skyC);
+      Gfx::big().fillSmoothRoundRect(0, 0, 128, 48, 10, pill, skyC);
+      Gfx::bigTime(Gfx::big(), (128 - w) / 2, 5, hhmm, digitW, 38, 3, hex565(0xFDF9EC),
+                   hex565(0xF0EAD0), pill, true);
+      Gfx::pushBigRegion(6, 20, 128, 48, 0, 0);
+    } else {
+      Gfx::beginBig(Scene::skyPixel(hF, grp, 44));
+      Txt::drawCenter(64, 30, CN16, hex565(0xFDF9EC), "--:--");
+      Gfx::pushBigRegion(6, 20, 128, 48);
+    }
+
+    // ---- 农历行(白字 + 暗影;场景侧为这行挖了 HUD 洞) ----
+    {
+      char luna[48];
+      if (l.valid) {
+        char lt1[24];
+        Lunar::dateText(l, lt1, sizeof(lt1));
+        snprintf(luna, sizeof(luna), "%s · %s年", lt1, Lunar::zodiac(l.year));
+      } else {
+        snprintf(luna, sizeof(luna), "%d年%d月%d日", y, mo, dd);
+      }
+      const uint16_t sky75 = Scene::skyPixel(hF, grp, 78);
+      Gfx::beginBig(sky75);
+      for (int row = 0; row < 18; ++row)
+        Gfx::big().drawFastHLine(0, row, 202, Scene::skyPixel(hF, grp, 70 + row));
+      Txt::draw(6, 14, CN12, lerp565(sky75, hex565(0x101018), 96), luna);
+      Txt::draw(6, 13, CN12, hex565(0xF0EAD0), luna);
+      Gfx::pushBigRegion(8, 70, 202, 18);
+    }
+
+    // ---- 天气 chip(磨砂白 = 天空色混白;点它跳天气页) ----
+    {
+      const Wx::Data& wx = Wx::data();
+      const uint16_t sky47 = Scene::skyPixel(hF, grp, 47);
+      const uint16_t fill = lerp565(sky47, hex565(0xFCFAF2), 199);
+      const uint16_t rim = lerp565(sky47, hex565(0x786E50), 90);
+      Gfx::beginBig(sky47);
+      Gfx::big().fillSmoothRoundRect(0, 0, 100, 50, 9, fill, sky47);
+      Gfx::big().drawSmoothRoundRect(0, 0, 9, 7, 100, 50, rim, sky47);
+      Scene::Group igrp = grp;
+      if (igrp == Scene::GR_MOSTLY) igrp = Scene::GR_CLEAR;
+      Gfx::wxIcon(Gfx::big(), (WxIcon)igrp, 20, 18, 24, fill);
+      char tempS[8];
+      snprintf(tempS, sizeof(tempS), "%d", wx.temp);
+      const int tw = Txt::draw(38, 26, NUM22, TH::TXT_HI, tempS);
+      Txt::draw(tw, 26, CN12, TH::TXT_HI, "°");
+      char wtx[24];
+      Txt::clip(CN12, Wx::wmoText(wx.wmo), 56, wtx, sizeof(wtx));
+      Txt::draw(38, 40, CN12, TH::TXT_MID, wtx);
+      Gfx::pushBigRegion(214, 22, 100, 50);
+    }
+
+    // 角标和页点压在地面上;地面重建时 hud 也会为 true,一起补回。
+    {
+      char badge[48];
+      const char* b = Wx::badgeText(badge, sizeof(badge));
+      if (b) {
+        const uint16_t groundC = Scene::groundColor(hF, grp);
+        tft.fillSmoothRoundRect(6, 222, 168, 20, 9,
+                                lerp565(groundC, hex565(0x141008), 140), groundC);
+        Txt::draw(14, 236, CN12, Wx::data().demo ? TH::RED : TH::AMBER, b);
+      }
+    }
+    pageDots(0, true);
+  }
 }
 
 // ================================================================ 页 2:音乐
@@ -283,8 +323,12 @@ void pageClock(float dt) {
 constexpr int MU_CX = 88, MU_CY = 100, MU_CR = 42;   // 圆封面
 constexpr int MU_TXTX = 162, MU_TXTW = 148;          // 右侧文字栏
 constexpr int MU_BTNCY = 178, MU_BTNGAP = 44;        // 三个圆形传输键
-// disc Sprite 在屏幕上的位置:圆盘(±62)+三个键(下到 200)的包围盒
+constexpr uint32_t MU_LRC_HOLD_MS = 1200;             // 新歌词先完整展示开头
+constexpr int MU_LRC_SPEED = 24;                      // 跑马灯速度(px/s)
+// disc Sprite:圆盘+环形音波。底边 36+132=168,style0 最长射线到 y≈165。
+// 三键顶边 play=158 / prev=164,推屏时裁掉键区,避免每帧盖住按钮。
 constexpr int MU_DISC_X = 26, MU_DISC_Y = 36;
+constexpr int MU_BTN_TOP = MU_BTNCY - 21;            // 含按钮 Sprite 的 1px 边距
 
 // 环上分格数:16 段镜像成 32,环才匀(同预览 SPEC_N)
 constexpr int SPEC_N = 32;
@@ -299,22 +343,31 @@ inline float ringAngle(int i) {
 /**
  * 环形音波:16 段沿封面圆盘外圈跳动(数据来自 BLE 的 SPEC 帧)。
  * 3 种样式都画在这个环上,上下滑切换。同预览 specRing。
- * 背景是纯底色,擦除靠调用方先清区域。
- */
-/**
- * 环形音波:16 段沿封面圆盘外圈跳动(数据来自 BLE 的 SPEC 帧)。
- * 3 种样式都画在这个环上,上下滑切换。同预览 specRing。
  * 背景是纯底色,擦除靠调用方先清区域。t 可以是屏幕或 disc Sprite。
  */
 void specRing(TFT_eSPI& t, int cx, int cy, int r, int style) {
   if (style == 0) {
-    // 放射条:一根根向外跳
+    // 放射条:圆头橙红射线,同预览 lineCap=round / neon(v) / r+3+v*17
     for (int i = 0; i < SPEC_N; ++i) {
       const float a = ringAngle(i), v = specAt(i);
-      const float r1 = r + 3.0f + v * 17.0f;
-      t.drawWideLine(cx + cosf(a) * r, cy + sinf(a) * r,
-                       cx + cosf(a) * r1, cy + sinf(a) * r1, 3.0f,
-                       TH::neon((uint8_t)(v * 255.0f)), TH::BG);
+      const float ca = cosf(a), sa = sinf(a);
+      float r0 = (float)r;
+      float r1 = r + 3.0f + v * 17.0f;
+      auto maxR = [&](float lim, float p, float d) -> float {
+        if (fabsf(d) < 1e-4f) return r1;
+        return (lim - p) / d;
+      };
+      if (ca > 0) r1 = fminf(r1, maxR((float)(GFX_DISC_W - 2), (float)cx, ca));
+      if (ca < 0) r1 = fminf(r1, maxR(1.0f, (float)cx, ca));
+      if (sa > 0) r1 = fminf(r1, maxR((float)(GFX_DISC_H - 2), (float)cy, sa));
+      if (sa < 0) r1 = fminf(r1, maxR(1.0f, (float)cy, sa));
+      if (r1 < r0 + 2.0f) r1 = r0 + 2.0f;
+      const uint16_t col = TH::neon((uint8_t)(v * 255.0f));
+      const float x0 = cx + ca * r0, y0 = cy + sa * r0;
+      const float x1 = cx + ca * r1, y1 = cy + sa * r1;
+      t.drawWideLine(x0, y0, x1, y1, 3.0f, col, TH::BG);
+      t.fillCircle((int)(x1 + 0.5f), (int)(y1 + 0.5f), 1, col);
+      t.fillCircle((int)(x0 + 0.5f), (int)(y0 + 0.5f), 1, col);
     }
   } else if (style == 1) {
     // 环形波纹:峰值连成一条闭合曲线
@@ -350,7 +403,7 @@ void specRing(TFT_eSPI& t, int cx, int cy, int r, int style) {
 }
 
 /**
- * 封面圆盘:虚线圆环 + 盘面里跑同一只像素皮卡丘(和时钟页同一份点阵)。
+ * 封面圆盘:浅黄唱盘 + 音符。皮卡丘只出现在时钟页,这里不画。
  * 同预览 coverDisc。spin 是虚线环自转角度(度)。
  * 频谱走环形样式时不画虚线环(dashRing=false),让位给音波。
  */
@@ -364,28 +417,55 @@ void coverDisc(TFT_eSPI& t, int cx, int cy, int r, float spin, bool dashRing) {
                         (i % 2) ? TH::ACCENT : TH::RED_DK, TH::BG, false);
     }
   }
-  // 盘面:浅黄底
   t.fillSmoothCircle(cx, cy, r, TH::GOLD_DK, TH::BG);
-  // 盘里装皮卡丘的头(BODY 24×20 精灵px,3× = 72×60),居中放,裁在圆内
-  t.setViewport(cx - r + 1, cy - r + 1, (r - 1) * 2, (r - 1) * 2);
-  Pika::drawHead(t, cx - 36, cy - 30, 3);
-  t.resetViewport();
+  t.drawSmoothCircle(cx, cy, (int)(r * 0.72f),
+                     lerp565(TH::GOLD_DK, TH::ACCENT, 140), TH::GOLD_DK);
+  t.fillSmoothCircle(cx, cy, (int)(r * 0.38f), TH::ACCENT, TH::GOLD_DK);
+  Gfx::glyph(t, GL_NOTE, cx, cy, (int)(r * 0.72f), TH::TXT_HI, TH::ACCENT);
   t.drawSmoothCircle(cx, cy, r, TH::ACCENT, TH::GOLD_DK);
 }
 
 /**
- * pageMusic(dt, full):
- *  - full=true  内容真变了(切页/歌名歌词/播放状态/按下态):重绘状态栏和
- *    右侧文字栏。
- *  - 每帧都做:圆盘+环形音波+三个键画进 disc Sprite 整块一次推送,
- *    页脚草地滚动。不再整屏 fillRect —— 那是音乐页「一直闪」的根源
- *    (每帧先全屏白一下再慢慢画内容)。
+ * 仅切页/弹窗返回/连接状态切换时清主体。逐项比较显示缓存，文字、状态栏
+ * 和按钮都在 Sprite 中合成后推送；歌词心跳不会重画未变化的区域。
  */
-void pageMusic(float dt, bool full) {
+void pageMusic(float dt, bool rebuild) {
+  static bool valid = false, wasConnected = false;
+  static char oldStatus[80] = "", oldTitle[64] = "", oldArtist[80] = "";
+  static char oldLyrics[3][256] = {};
+  static uint32_t lyricStartMs = 0;
+  static int oldButtons = -1;
+  static bool hadToast = false;
+#ifdef DEMO_MODE
+  const bool connected = true;
+#else
+  const bool connected = g_media.connected;
+#endif
+  const bool reset = rebuild || s_musicReset || !valid || connected != wasConnected;
+  valid = true;
+  wasConnected = connected;
+  s_musicReset = false;
+  char status[80];
+  snprintf(status, sizeof(status), "%d/%d/%d/%d/%s", g_media.playing,
+           g_media.advOn, WifiMgr::isConnected(), WifiMgr::getConfig()->saved,
+           g_media.peer);
+  const bool statusChanged = reset || strcmp(status, oldStatus) != 0;
+  if (reset) {
+    tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
+    Scene::footer(tft, TH::BG);
+    pageDots(1, true);
+  }
+  if (!reset && hadToast && s_toastT <= 0.0f) {
+    Gfx::beginStrip(TH::BG);
+    Gfx::pushStripH(0, 200, Scene::FOOT_TOP - 200);
+    Scene::footer(tft, TH::BG);
+    pageDots(1, true);
+  }
+  hadToast = s_toastT > 0.0f;
 #ifndef DEMO_MODE
-  if (!g_media.connected) {
-    // 等手机来连 / 蓝牙关了:主体按需重绘,页脚每帧滚
-    if (full) {
+  if (!connected) {
+    // 等手机来连 / 蓝牙关了:主体+静止页脚按需重绘
+    if (statusChanged) {
       const bool adv = g_media.advOn;
       tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
       statusBar("音乐", adv ? "广播中" : "蓝牙已关");
@@ -400,34 +480,33 @@ void pageMusic(float dt, bool full) {
       textBtn("m.btpanel", 96, 170, 128, 30, adv ? "蓝牙设置" : "开启蓝牙",
               TH::ACCENT);
     }
-    Scene::footer(tft, dt, TH::BG);
-    pageDots(1, true);
+    if (!statusChanged) hitAdd("m.btpanel", 96, 170, 128, 30);
+    strlcpy(oldStatus, status, sizeof(oldStatus));
     return;
   }
 #endif
 
   const bool playing = g_media.playing;
   const int pos = g_media.pos >= 0 ? g_media.pos : s_demoPos;
-  const int dur = g_media.dur > 0 ? g_media.dur : DEMO_DUR;
-
-  // ---- 主体(状态栏 + 右侧文字栏)只在内容变化时重绘 ----
-  if (full) {
-    tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::BG);
+  if (statusChanged) {
     statusBar(playing ? "正在播放" : "已暂停",
               g_media.peer[0] ? g_media.peer : "", false);
-
-    // 歌名 / 歌手 / 歌词(当前行 + 后两行):封面右侧
-    {
-      const char* ti = g_media.title[0] ? g_media.title : DEMO_TITLE;
-      const char* ar = g_media.artist[0] ? g_media.artist : DEMO_ARTIST;
+    strlcpy(oldStatus, status, sizeof(oldStatus));
+  }
+  const char* ti = g_media.title[0] ? g_media.title : DEMO_TITLE;
+  const char* ar = g_media.artist[0] ? g_media.artist : DEMO_ARTIST;
+  if (reset || strcmp(ti, oldTitle) || strcmp(ar, oldArtist)) {
+      Gfx::beginBig(TH::BG);
       char c[48];
       Txt::clip(CN16, ti, MU_TXTW, c, sizeof(c));
-      Txt::draw(MU_TXTX, 62, CN16, TH::TXT_HI, c);
+      Txt::draw(0, 18, CN16, TH::TXT_HI, c);
       Txt::clip(CN12, ar, MU_TXTW, c, sizeof(c));
-      Txt::draw(MU_TXTX, 80, CN12, TH::TXT_MID, c);
-    }
-    Gfx::divider(tft, MU_TXTX, 92, MU_TXTW, TH::RIM, TH::BG);
-    {
+      Txt::draw(0, 36, CN12, TH::TXT_MID, c);
+      Gfx::divider(Gfx::big(), 0, 48, MU_TXTW, TH::RIM, TH::BG);
+      Gfx::pushBigRegion(MU_TXTX, 44, MU_TXTW, 50);
+      strlcpy(oldTitle, ti, sizeof(oldTitle));
+      strlcpy(oldArtist, ar, sizeof(oldArtist));
+  }
 #ifdef DEMO_MODE
       const int li = (pos / 6) % 5;
       const char* l0 = DEMO_LRC[li];
@@ -439,24 +518,42 @@ void pageMusic(float dt, bool full) {
       const char* l1 = "";
       const char* l2 = "";
 #endif
+  const bool lyricsChanged = reset || strcmp(l0, oldLyrics[0]) ||
+                             strcmp(l1, oldLyrics[1]) ||
+                             strcmp(l2, oldLyrics[2]);
+  if (lyricsChanged) lyricStartMs = millis();
+  const bool lyricScrolls = l0[0] && Txt::width(CN12, l0) > MU_TXTW;
+  if (lyricsChanged || lyricScrolls) {
+      Gfx::beginBig(TH::BG);
       char c[48];
       if (l0[0]) {
-        Txt::clip(CN12, l0, MU_TXTW, c, sizeof(c));
-        Txt::draw(MU_TXTX, 112, CN12, TH::RED, c);
+        const uint32_t elapsed = millis() - lyricStartMs;
+        const int offset = lyricScrolls && elapsed > MU_LRC_HOLD_MS
+                               ? (int)(((elapsed - MU_LRC_HOLD_MS) / 1000U) *
+                                           (uint32_t)MU_LRC_SPEED +
+                                       ((elapsed - MU_LRC_HOLD_MS) % 1000U) *
+                                           (uint32_t)MU_LRC_SPEED / 1000U)
+                               : 0;
+        Txt::marquee(16, MU_TXTW, CN12, TH::RED, l0, offset);
+        if (offset > 0)
+          Txt::fadeEdges(Gfx::big(), MU_TXTW, 20, 8, TH::BG);
       }
       if (l1[0]) {
         Txt::clip(CN12, l1, MU_TXTW, c, sizeof(c));
-        Txt::draw(MU_TXTX, 128, CN12, TH::TXT_LO, c);
+        Txt::draw(0, 32, CN12, TH::TXT_LO, c);
       }
       if (l2[0]) {
         Txt::clip(CN12, l2, MU_TXTW, c, sizeof(c));
-        Txt::draw(MU_TXTX, 143, CN12, TH::TXT_LO, c);
+        Txt::draw(0, 47, CN12, TH::TXT_LO, c);
       }
-    }
+      Gfx::pushBigRegion(MU_TXTX, 96, MU_TXTW, 54);
+      strlcpy(oldLyrics[0], l0, sizeof(oldLyrics[0]));
+      strlcpy(oldLyrics[1], l1, sizeof(oldLyrics[1]));
+      strlcpy(oldLyrics[2], l2, sizeof(oldLyrics[2]));
   }
 
-  // ---- 圆盘 + 环形音波 + 3 个传输键:画进 disc Sprite,整块一次推送 ----
-  // 背景是纯色 TH::BG,整块不透明覆盖,不会闪白也不留残影。
+  // ---- 圆盘 + 环形音波:画进 disc Sprite,推屏时避开三键 ----
+  // 背景是纯色 TH::BG,不透明覆盖,不会闪白也不留残影。
   TFT_eSprite& d = Gfx::disc();
   d.fillSprite(TH::BG);
   specRing(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR + 3, s_specStyle);
@@ -464,35 +561,57 @@ void pageMusic(float dt, bool full) {
             playing ? s_specPhase * 26.0f : 0.0f, false);
 
   // 3 个圆形传输键:上一曲 / 播放(大) / 下一曲,横排在封面下方。
-  // 主键实心红大圆,副键描边小圆(同预览 roundBtn)。画进 disc,热区照常注册。
-  auto roundBtn = [](TFT_eSPI& t, const char* id, int cx, int r, Glyph k,
-                     bool primary) {
+  // 主键实心红大圆,副键描边小圆(同预览 roundBtn)。按钮直接画屏。
+  const int buttonState = (playing ? 1 : 0) | (hitIsPressed("m.prev") ? 2 : 0) |
+                          (hitIsPressed("m.play") ? 4 : 0) |
+                          (hitIsPressed("m.next") ? 8 : 0);
+  const bool paintButtons = reset || buttonState != oldButtons;
+  auto roundBtn = [paintButtons](const char* id, int screenX, int r, Glyph k,
+                                bool primary) {
     const int hitR = (r + 6 > 15) ? r + 6 : 15;
-    hitAdd(id, cx - hitR, MU_BTNCY - hitR, hitR * 2, hitR * 2);
+    hitAdd(id, screenX - hitR, MU_BTNCY - hitR, hitR * 2, hitR * 2);
+    if (!paintButtons) return;
+    Gfx::beginBig(TH::BG);
+    TFT_eSprite& t = Gfx::big();
+    const int cx = r + 1, cy = r + 1;
     const bool down = hitIsPressed(id);
     if (primary) {
-      Gfx::glow(t, cx, MU_BTNCY, r, TH::RED, TH::BG);
+      Gfx::glow(t, cx, cy, r, TH::RED, TH::BG);
       const uint16_t fill = down ? TH::ACCENT : TH::RED;
-      t.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
-      Gfx::glyph(t, k, cx, MU_BTNCY, r,
+      t.fillSmoothCircle(cx, cy, r, fill, TH::BG);
+      Gfx::glyph(t, k, cx, cy, r,
                  down ? TH::TXT_HI : hex565(0xFFFBF0), fill);
     } else {
       const uint16_t fill = down ? TH::GOLD_DK : TH::CARD;
-      t.fillSmoothCircle(cx, MU_BTNCY, r, fill, TH::BG);
-      t.drawSmoothCircle(cx, MU_BTNCY, r, down ? TH::ACCENT : TH::RIM, fill);
-      Gfx::glyph(t, k, cx, MU_BTNCY, (int)(r * 0.92f),
+      t.fillSmoothCircle(cx, cy, r, fill, TH::BG);
+      t.drawSmoothCircle(cx, cy, r, down ? TH::ACCENT : TH::RIM, fill);
+      Gfx::glyph(t, k, cx, cy, (int)(r * 0.92f),
                  down ? TH::TXT_HI : TH::TXT_MID, fill);
     }
+    Gfx::pushBigRegion(screenX - cx, MU_BTNCY - cy, 2 * r + 3, 2 * r + 3);
   };
-  roundBtn(d, "m.prev", SCR_W / 2 - MU_BTNGAP - MU_DISC_X, 14, GL_PREV, false);
-  roundBtn(d, "m.play", SCR_W / 2 - MU_DISC_X, 20, playing ? GL_PAUSE : GL_PLAY,
-           true);
-  roundBtn(d, "m.next", SCR_W / 2 + MU_BTNGAP - MU_DISC_X, 14, GL_NEXT, false);
-  Gfx::pushDisc(MU_DISC_X, MU_DISC_Y);
-
-  Scene::footer(tft, dt, TH::BG);
-  pageDots(1, true);
-  s_musicReset = false;
+  // 整块 push 会把精灵里的米白底盖到三键上。主键顶 y=158,副键圆顶 y=164。
+  // 先推到主键顶;再把封面正下方的射线尾巴(x 停在上一曲键左侧)补上。
+  {
+    const int visH = MU_BTN_TOP - MU_DISC_Y;
+    Gfx::pushDiscRegion(MU_DISC_X, MU_DISC_Y, GFX_DISC_W, visH);
+    // y=158..164 上一曲圆还没到,可以把射线补到播放键左缘;再往下停在上一曲左缘
+    const int playLeft = SCR_W / 2 - 21;
+    const int prevLeft = SCR_W / 2 - MU_BTNGAP - 15;
+    const int prevTop = MU_BTNCY - 15;
+    const int discBot = MU_DISC_Y + GFX_DISC_H;
+    const int srcBase = MU_BTN_TOP - MU_DISC_Y;
+    if (prevTop > MU_BTN_TOP)
+      Gfx::pushDiscRegion(MU_DISC_X, MU_BTN_TOP, playLeft - MU_DISC_X,
+                          prevTop - MU_BTN_TOP, 0, srcBase);
+    if (discBot > prevTop)
+      Gfx::pushDiscRegion(MU_DISC_X, prevTop, prevLeft - MU_DISC_X,
+                          discBot - prevTop, 0, prevTop - MU_DISC_Y);
+  }
+  roundBtn("m.prev", SCR_W / 2 - MU_BTNGAP, 14, GL_PREV, false);
+  roundBtn("m.play", SCR_W / 2, 20, playing ? GL_PAUSE : GL_PLAY, true);
+  roundBtn("m.next", SCR_W / 2 + MU_BTNGAP, 14, GL_NEXT, false);
+  oldButtons = buttonState;
 }
 
 // ================================================================ 页 3:天气
@@ -575,7 +694,7 @@ void pageWeather(float dt) {
       snprintf(ts, sizeof(ts), "%d°", d.tmax);
       Txt::drawRight(302, y + 16, CN12, TH::AMBER, ts);
     }
-    Scene::footer(tft, dt, TH::BG);
+    Scene::footer(tft, TH::BG);
     pageDots(2, true);
     return;
   }
@@ -612,7 +731,7 @@ void pageWeather(float dt) {
     snprintf(ts, sizeof(ts), "%d°", d.tmax);
     Txt::drawRight(310, y + 8, CN12, TH::AMBER, ts);
   }
-  Scene::footer(tft, dt, TH::BG);
+  Scene::footer(tft, TH::BG);
   pageDots(2, true);
 }
 
@@ -706,7 +825,7 @@ void pageDate(float dt) {
     Txt::clip(CN12, line, 300, lineClip, sizeof(lineClip));
     Txt::draw(10, 207, CN12, TH::AMBER, lineClip);
   }
-  Scene::footer(tft, dt, TH::BG);
+  Scene::footer(tft, TH::BG);
   pageDots(3, true);
 }
 
@@ -718,6 +837,7 @@ struct SetRow {
   const char* act;   // nullptr = 只读行
   bool arrow, warn, bar;
 };
+constexpr int SET_ROW_MAX = 12;
 
 void buildSettingRows(SetRow* rows, int& n) {
   n = 0;
@@ -731,6 +851,13 @@ void buildSettingRows(SetRow* rows, int& n) {
     snprintf(r.v, sizeof(r.v), "离线 · %s", cfg->ssid);
   else snprintf(r.v, sizeof(r.v), "未配置,点此扫描");
   if (!online) r.c = cfg->saved ? TH::AMBER : TH::RED;
+  rows[n++] = r;
+
+  r = SetRow{"城市", "", TH::ACCENT, "city", true, false, false};
+  if (Wx::isAuto())
+    snprintf(r.v, sizeof(r.v), "%s · 自动", Wx::place().name);
+  else
+    strlcpy(r.v, Wx::place().name, sizeof(r.v));
   rows[n++] = r;
 
   r = SetRow{"蓝牙", "", TH::ACCENT, "bt", true, false, false};
@@ -764,7 +891,7 @@ void buildSettingRows(SetRow* rows, int& n) {
 }
 
 void pageSettings(float dt) {
-  SetRow rows[8];
+  SetRow rows[SET_ROW_MAX];
   int n = 0;
   buildSettingRows(rows, n);
 
@@ -824,7 +951,7 @@ void pageSettings(float dt) {
     const int thY = trackY + (trackH - thH) * s_setScroll / (n - SET_VIS);
     tft.fillRoundRect(310, thY, 2, thH, 1, TH::ACCENT);
   }
-  Scene::footer(tft, dt, TH::BG);
+  Scene::footer(tft, TH::BG);
   pageDots(4, true);
 }
 
@@ -855,6 +982,115 @@ int rssiToSig(int rssi) {
   if (rssi > -55) return 3;
   if (rssi > -70) return 2;
   return 1;
+}
+
+// ---------------------------------------------------------------- 城市列表
+enum CityKind : uint8_t { CK_AUTO = 0, CK_HOT, CK_PROV, CK_CITY };
+
+int cityListCount() {
+  if (s_cityFilter[0]) return Cities::matchCount(s_cityFilter);
+  if (s_cityProv >= 0) return Cities::provCount((uint8_t)s_cityProv);
+  return 1 + Cities::HOT_N + Cities::PROV_N;
+}
+
+bool cityListNth(int n, CityKind& kind, int& payload, const char*& name,
+                 const char*& sub) {
+  if (n < 0) return false;
+  if (s_cityFilter[0]) {
+    const int idx = Cities::matchNth(s_cityFilter, n);
+    if (idx < 0) return false;
+    kind = CK_CITY;
+    payload = idx;
+    name = Cities::LIST[idx].name;
+    sub = Cities::PROV_NAMES[Cities::LIST[idx].prov];
+    return true;
+  }
+  if (s_cityProv >= 0) {
+    const int idx = Cities::provNth((uint8_t)s_cityProv, n);
+    if (idx < 0) return false;
+    kind = CK_CITY;
+    payload = idx;
+    name = Cities::LIST[idx].name;
+    sub = nullptr;
+    return true;
+  }
+  if (n == 0) {
+    kind = CK_AUTO;
+    payload = 0;
+    name = "自动定位";
+    sub = Wx::isAuto() ? "按公网 IP · 已开" : "按公网 IP · 点此打开";
+    return true;
+  }
+  n -= 1;
+  if (n < Cities::HOT_N) {
+    kind = CK_HOT;
+    payload = (int)Cities::HOT_IDX[n];
+    name = Cities::LIST[payload].name;
+    sub = "热门";
+    return true;
+  }
+  n -= Cities::HOT_N;
+  if (n < Cities::PROV_N) {
+    kind = CK_PROV;
+    payload = n;
+    name = Cities::PROV_NAMES[n];
+    sub = "省份";
+    return true;
+  }
+  return false;
+}
+
+void openCityModal() {
+  s_modal = MOD_CITY;
+  s_modalSel = 0;
+  s_cityProv = -1;
+  s_cityFilter[0] = 0;
+  s_citySel = 0;
+  s_dirty = true;
+}
+
+void pullWeatherForPlace() {
+  if (!WifiMgr::isConnected()) {
+    s_dirty = true;
+    return;
+  }
+  if (Wx::fetch()) {
+    s_dirty = true;
+  } else {
+    UI::toast("天气刷新失败,城市已改");
+  }
+}
+
+void pinCityIdx(int idx) {
+  if (idx < 0 || idx >= Cities::N) return;
+  const Cities::Rec& c = Cities::LIST[idx];
+  Wx::setPlace(c.name, c.lat, c.lon, true);
+  s_modal = MOD_NONE;
+  s_needClear = true;
+  char msg[40];
+  snprintf(msg, sizeof(msg), "已钉死 %s", c.name);
+  UI::toast(msg);
+  pullWeatherForPlace();
+}
+
+void goAutoLocate() {
+  Wx::setPlace(Wx::place().name, Wx::place().lat, Wx::place().lon, false);
+  s_modal = MOD_NONE;
+  s_needClear = true;
+  if (!WifiMgr::isConnected()) {
+    UI::toast("已改回自动 · 连上网后再定位");
+    s_dirty = true;
+    return;
+  }
+  if (Wx::locate()) {
+    char msg[40];
+    snprintf(msg, sizeof(msg), "定位到 %s", Wx::place().name);
+    UI::toast(msg);
+    pullWeatherForPlace();
+  } else {
+    UI::toast("定位失败,保持原城市");
+    s_dirty = true;
+  }
 }
 
 void drawModal() {
@@ -900,7 +1136,7 @@ void drawModal() {
     const float a = (float)(millis() % 1400) / 1400.0f * 360.0f;
     tft.drawSmoothArc(160, 108, 16, 11, a, a + 130.0f, TH::ACCENT, TH::BG, true);
     Txt::drawCenter(160, 138, CN16, TH::TXT, s_connSsid);
-    Txt::drawCenter(160, 154, CN12, TH::TXT_MID, "连上后自动拉天气…");
+    Txt::drawCenter(160, 154, CN12, TH::TXT_MID, "连上后自动定位并拉天气");
   } else if (s_modal == MOD_BT) {
     modalFrame(18, 34, 284, 172, "蓝牙", TH::ACCENT);
     const bool on = g_media.connected || g_media.advOn;
@@ -937,7 +1173,7 @@ void drawModal() {
   } else if (s_modal == MOD_RESET) {
     s_modalBtnN = 2;
     modalFrame(26, 56, 268, 128, "恢复默认设置", TH::AMBER);
-    Txt::draw(40, 104, CN12, TH::TXT, "会清掉:亮度、样式、WiFi 配置。");
+    Txt::draw(40, 104, CN12, TH::TXT, "会清掉:亮度、样式、WiFi、城市定位。");
     Txt::draw(40, 122, CN12, TH::TXT_MID, "清完回到时钟页。");
     textBtn("x.reset.go", 40, 138, 110, 30, "恢复默认", TH::RED, 0);
     textBtn("x.reset.no", 170, 138, 110, 30, "取消", TH::TXT_MID, 1);
@@ -947,6 +1183,64 @@ void drawModal() {
     Txt::draw(40, 112, CN12, TH::TXT, "设置会保留,大约 3 秒后回到时钟页。");
     textBtn("x.reboot.go", 40, 138, 110, 30, "重启", TH::RED, 0);
     textBtn("x.reboot.no", 170, 138, 110, 30, "取消", TH::TXT_MID, 1);
+  } else if (s_modal == MOD_CITY) {
+    s_modalBtnN = 0;   // 上下滑滚列表,不走按钮焦点
+    const char* title = "选择城市";
+    if (s_cityFilter[0]) title = "搜索城市";
+    else if (s_cityProv >= 0) title = Cities::PROV_NAMES[s_cityProv];
+    modalFrame(14, 20, 292, 200, title, TH::ACCENT);
+
+    const int n = cityListCount();
+    const int VIS = 6;
+    int lo = s_citySel - VIS + 1;
+    if (lo < 0) lo = 0;
+    if (lo > n - VIS) lo = n > VIS ? n - VIS : 0;
+    if (n <= 0) {
+      Txt::drawCenter(160, 110, CN16, TH::TXT_MID, "没有匹配");
+    }
+    for (int i = lo; i < n && i < lo + VIS; ++i) {
+      CityKind kind;
+      int payload = 0;
+      const char* name = "";
+      const char* sub = nullptr;
+      if (!cityListNth(i, kind, payload, name, sub)) break;
+      const int y = 36 + (i - lo) * 24;
+      char id[16];
+      snprintf(id, sizeof(id), "c.it.%d", i);
+      hitAdd(id, 22, y, 276, 22);
+      const bool down = hitIsPressed(id);
+      const bool sel = (i == s_citySel);
+      if (down)
+        Gfx::cardGrad(tft, 22, y, 276, 22, 5,
+                      lerp565(TH::CARD_HI, TH::ACCENT, 77), TH::CARD_HI, TH::BG);
+      else if (sel)
+        Gfx::cardGrad(tft, 22, y, 276, 22, 5, TH::GOLD_DK, TH::CARD, TH::BG);
+      else
+        Gfx::cardRim(tft, 22, y, 276, 22, 5, TH::CARD, TH::LINE, TH::BG);
+      const bool here =
+          (kind == CK_CITY || kind == CK_HOT) &&
+          strcmp(name, Wx::place().name) == 0;
+      if (kind == CK_AUTO && Wx::isAuto())
+        tft.fillSmoothCircle(28, y + 11, 2, TH::GREEN, TH::CARD);
+      else if (here)
+        tft.fillSmoothCircle(28, y + 11, 2, TH::GREEN, TH::CARD);
+      const int nameX = (here || (kind == CK_AUTO && Wx::isAuto())) ? 36 : 30;
+      char nc[28];
+      Txt::clip(CN12, name, 150, nc, sizeof(nc));
+      Txt::draw(nameX, y + 16, CN12, TH::TXT, nc);
+      if (sub && sub[0]) {
+        char sc[16];
+        Txt::clip(CN12, sub, 80, sc, sizeof(sc));
+        Txt::drawRight(290, y + 16, CN12, TH::TXT_LO, sc);
+      } else if (kind == CK_PROV) {
+        Txt::drawRight(290, y + 16, CN12, TH::TXT_LO, ">");
+      }
+    }
+    textBtn("c.search", 30, 186, 126, 30, "拼音搜索", TH::ACCENT, -1);
+    if (s_cityFilter[0] || s_cityProv >= 0)
+      textBtn("c.back", 164, 186, 126, 30, "返回", TH::TXT_MID, -1);
+    else
+      textBtn("c.cancel", 164, 186, 126, 30, "取消", TH::TXT_MID, -1);
   }
 }
 
@@ -954,14 +1248,16 @@ void drawModal() {
 void drawToast() {
   if (s_toastT <= 0.0f || !s_toast[0]) return;
   char clipT[40];
-  Txt::clip(CN12, s_toast, 240, clipT, sizeof(clipT));
+  Txt::clip(CN12, s_toast, GFX_BIG_W - 26, clipT, sizeof(clipT));
   int w = Txt::width(CN12, clipT) + 26;
   if (w < 80) w = 80;
-  const int x = (SCR_W - w) / 2, y = 196;
-  Gfx::cardGrad(tft, x, y, w, 24, 12, TH::RED_DK, TH::CARD, TH::BG);
+  const int x = (SCR_W - w) / 2, y = s_page == PG_MUSIC ? 200 : 196;
+  Gfx::beginBig(TH::BG);
+  Gfx::cardGrad(Gfx::big(), 0, 0, w, 24, 12, TH::RED_DK, TH::CARD, TH::BG);
   // 红描边(同预览 cardGrad 的第三个色参),压在草地上也看得清边界
-  tft.drawSmoothRoundRect(x, y, 12, 10, w, 24, TH::RED, TH::BG);
-  Txt::drawCenter(SCR_W / 2, y + 16, CN12, TH::TXT_HI, clipT);
+  Gfx::big().drawSmoothRoundRect(0, 0, 12, 10, w, 24, TH::RED, TH::BG);
+  Txt::drawCenter(w / 2, 16, CN12, TH::TXT_HI, clipT);
+  Gfx::pushBigRegion(x, y, w, 24);
 }
 
 // ================================================================ 偏好持久化
@@ -990,8 +1286,8 @@ void savePrefs() {
 }
 
 // ================================================================ 渲染调度
-// contentChanged:内容真变了(切页/数据更新/按下态变化)。false = 这一帧只是
-// 页脚滚动的动画帧,静态三页的主体不必重画,省 SPI 带宽。
+// contentChanged:内容真变了(切页/数据更新/按下态变化)。
+// 静态三页只在这时重绘主体+静止页脚;时钟/音乐页每帧有自己的动画层。
 void render(float dt, bool contentChanged) {
   if (Keyboard::isActive()) {
     hitClear();
@@ -1007,30 +1303,32 @@ void render(float dt, bool contentChanged) {
   }
   // 清屏策略:
   //   时钟页 —— 场景自己覆盖整屏,不清
-  //   音乐页 —— 每帧自己清主体区(环形音波每帧全变)
-  //   其余三页 —— 主体只在内容变化时重绘(s_needClear);每帧只重画滚动的页脚
-  // 时钟页每帧全画(场景动画);音乐页/静态页主体只在内容变化时重绘
-  // (音乐页的圆盘+音波每帧由 disc Sprite 整体推送,不依赖这里的 redrawBody)
+  //   音乐页 —— 圆盘+音波每帧推 disc;主体/页脚只在内容变化时重绘
+  //   其余三页 —— 主体+静止页脚只在内容变化时重绘
+  const bool resetClockScene = s_page == PG_CLOCK && s_needClear;
+  const bool resetMusic = s_page == PG_MUSIC && s_needClear;
   const bool statics = (s_page != PG_CLOCK && s_page != PG_MUSIC);
   const bool redrawBody = (s_page == PG_CLOCK) || s_needClear || contentChanged;
   // 热区由页面绘制时注册,所以只在真要重绘主体时才清 ——
-  // 静态页「只刷页脚」的那些帧必须保留上一帧的热区表,否则按钮会失灵。
-  if (redrawBody) hitClear();
+  // 静态页按需重绘,热区随主体一起重建。
+  if (redrawBody || s_page == PG_MUSIC) hitClear();
   if (statics && redrawBody) {
     // 主体重绘必须先清底,否则新文字会叠在旧文字上(页脚随后重画,不受影响)
     tft.fillScreen(TH::BG);
   }
+  if (resetClockScene) {
+    Scene::invalidateCache();
+    s_clockHudDirty = true;
+  }
   s_needClear = false;
   switch (s_page) {
     case PG_CLOCK: pageClock(dt); break;
-    case PG_MUSIC: pageMusic(dt, redrawBody); break;
+    case PG_MUSIC: pageMusic(dt, resetMusic); break;
     case PG_WEATHER: if (redrawBody) pageWeather(dt); break;
     case PG_DATE: if (redrawBody) pageDate(dt); break;
     case PG_SETTINGS: if (redrawBody) pageSettings(dt); break;
     default: break;
   }
-  // 静态三页:主体没重绘时,单独把滚动的页脚刷上去
-  if (statics && !redrawBody) Scene::footer(tft, dt, TH::BG);
   drawToast();
 }
 
@@ -1111,15 +1409,17 @@ uint8_t page() { return s_page; }
 void setPage(uint8_t p) {
   if (p >= PG_N || p == s_page) return;
   s_page = p;
+  Scene::invalidateCache();
   if (p == PG_MUSIC) s_musicReset = true;
   s_needClear = true;
   s_dirty = true;
+  s_clockHudDirty = true;
 }
 
 uint8_t bright() { return s_bright; }
 uint8_t specStyle() { return s_specStyle; }
 uint8_t wxStyle() { return s_wxStyle; }
-void markDirty() { s_dirty = true; }
+void markDirty() { s_dirty = true; s_clockHudDirty = true; }
 
 void toast(const char* msg) {
   strlcpy(s_toast, msg, sizeof(s_toast));
@@ -1131,7 +1431,7 @@ void notifyWifiResult(bool ok) {
   if (s_modal != MOD_CONNECTING) return;
   s_modal = MOD_NONE;
   s_needClear = true;
-  if (ok) toast("已连接,天气更新中");
+  if (ok) toast("已连接,正在定位并拉天气");
   else toast("连接失败,请重试");
   s_dirty = true;
 }
@@ -1140,6 +1440,12 @@ void notifyBtChanged() { s_dirty = true; }
 
 // ---------------------------------------------------------------- 主服务
 void service(float dt) {
+  // service 每个主循环都跑，场景只在绘制帧推进；积累两次绘制之间的时间。
+  static float sceneDt = 0.0f;
+  if (s_page == PG_CLOCK && s_modal == MOD_NONE && !Keyboard::isActive())
+    sceneDt = fminf(sceneDt + dt, 0.25f);
+  else
+    sceneDt = 0.0f;
   // ---- 演示数据 / BLE 数据推进 ----
 #ifdef DEMO_MODE
   if (g_media.playing) {
@@ -1153,7 +1459,7 @@ void service(float dt) {
     const int dlr = (s_demoPos / 6) % 5;
     if (dlr != s_demoLrcRow) {
       s_demoLrcRow = (int8_t)dlr;
-      s_dirty = true;
+      if (s_page == PG_MUSIC) s_dirty = true;
     }
   }
   tickSpecDemo(dt);
@@ -1180,6 +1486,7 @@ void service(float dt) {
     s_toastT -= dt;
     if (s_toastT <= 0.0f) {
       s_toastT = 0.0f;
+      if (s_page == PG_CLOCK) Scene::restoreGroundOverlay();
       s_dirty = true;
     }
   }
@@ -1223,9 +1530,8 @@ void service(float dt) {
   }
 
   // ---- 帧率调度 ----
-  // 五页共用的草地页脚在滚,所以每一页都是动画页(同预览:整机同一片地面)。
-  // 时钟页最重(全屏场景)跑 CLOCK_FRAME_MS;音乐页频谱 MUSIC_FRAME_MS;
-  // 其余三页只有页脚 26px 在动,用 FOOT_FRAME_MS 省 SPI 带宽。
+  // 时钟页场景动画 CLOCK_FRAME_MS;音乐页频谱 MUSIC_FRAME_MS;
+  // 其余三页页脚静止,按需重绘。
   bool anim = false;
   uint32_t period = CLOCK_FRAME_MS;
   if (Keyboard::isActive()) {
@@ -1239,17 +1545,18 @@ void service(float dt) {
     anim = true;
     period = MUSIC_FRAME_MS;
   } else {
-    anim = true;
-    period = FOOT_FRAME_MS;
+    anim = false;
+    period = IDLE_FRAME_MS;
   }
   const uint32_t now = millis();
   const bool wasDirty = s_dirty;
   if ((anim && now - s_lastRenderMs >= period) || wasDirty) {
     s_lastRenderMs = now;
     s_dirty = false;
-    // wasDirty = 内容真变了(切页/数据到/按下态变) → 静态页要连主体一起重绘;
-    // 否则这一帧只是页脚滚动的动画帧,主体保持不动。
-    render(anim ? dt : 0.0f, wasDirty);
+    // wasDirty = 内容真变了(切页/数据到/按下态变) → 静态页连主体+页脚一起重绘。
+    const float renderDt = s_page == PG_CLOCK ? sceneDt : dt;
+    render(anim ? renderDt : 0.0f, wasDirty);
+    sceneDt = 0.0f;
   }
 }
 
@@ -1268,6 +1575,13 @@ void handleGesture(Gesture g) {
   s_manualT = MANUAL_HOLD_MS / 1000.0f;
 
   if (s_modal != MOD_NONE) {
+    if (s_modal == MOD_CITY) {
+      const int n = cityListCount();
+      if (n > 0)
+        s_citySel = (int16_t)((s_citySel + dir + n) % n);
+      s_dirty = true;
+      return;
+    }
     // 弹窗里:上下移动按钮焦点
     if (s_modalBtnN > 1)
       s_modalSel = (int8_t)((s_modalSel + dir + s_modalBtnN) % s_modalBtnN);
@@ -1289,7 +1603,7 @@ void handleGesture(Gesture g) {
       break;
     }
     case PG_SETTINGS: {
-      SetRow rows[8];
+      SetRow rows[SET_ROW_MAX];
       int n = 0;
       buildSettingRows(rows, n);
       s_setSel = (int8_t)((s_setSel + dir + n) % n);
@@ -1323,18 +1637,30 @@ void handleTap(const char* id, int x, int y) {
   if (Keyboard::isActive()) {
     const KeyboardResult r = Keyboard::handleTouch(x, y);
     if (r == KB_RESULT_CONFIRM) {
-      const char* pw = Keyboard::getInput();
-      if (!pw[0]) {
+      const char* in = Keyboard::getInput();
+      if (s_kbWhy == 1) {
+        Keyboard::endInput();
+        s_needClear = true;
+        if (in && in[0]) strlcpy(s_cityFilter, in, sizeof(s_cityFilter));
+        else s_cityFilter[0] = 0;
+        s_cityProv = -1;
+        s_citySel = 0;
+        s_modal = MOD_CITY;
+        s_dirty = true;
+        return;
+      }
+      if (!in[0]) {
         toast("密码没输入");
         s_dirty = true;
         return;
       }
       Keyboard::endInput();
       s_needClear = true;
-      startConnect(s_connSsid, pw);
+      startConnect(s_connSsid, in);
     } else if (r == KB_RESULT_CANCEL) {
       Keyboard::endInput();
       s_needClear = true;
+      if (s_kbWhy == 1) s_modal = MOD_CITY;
       s_dirty = true;
     } else {
       s_dirty = true;   // 按了一个字符,重画输入行
@@ -1355,12 +1681,17 @@ static void doAct(const char* id, int x, int y) {
 
   // ---- 音乐页 ----
   if (strcmp(id, "m.play") == 0) {
-    g_media.playing = !g_media.playing;
+    const bool nextPlaying = !g_media.playing;
+#ifndef DEMO_MODE
+    // Android 的 play/pause 是明确动作，play 并不是播放/暂停切换。
+    if (!bleSendBtn(nextPlaying ? "play" : "pause")) {
+      toast("控制未发送，请重连蓝牙");
+      return;
+    }
+#endif
+    g_media.playing = nextPlaying;
     g_media.lastPlayMs = millis();
     toast(g_media.playing ? "播放" : "暂停");
-#ifndef DEMO_MODE
-    if (g_media.connected) bleSendBtn("play");
-#endif
     return;
   }
   if (strcmp(id, "m.prev") == 0) {
@@ -1390,7 +1721,7 @@ static void doAct(const char* id, int x, int y) {
   if (strncmp(id, "s.row.", 6) == 0) {
     const int idx = atoi(id + 6);
     s_setSel = (int8_t)idx;
-    SetRow rows[8];
+    SetRow rows[SET_ROW_MAX];
     int n = 0;
     buildSettingRows(rows, n);
     if (idx >= 0 && idx < n && rows[idx].act) doAct(rows[idx].act, x, y);
@@ -1402,6 +1733,10 @@ static void doAct(const char* id, int x, int y) {
     s_scanWasDone = false;
     WifiMgr::startScan();
     s_dirty = true;
+    return;
+  }
+  if (strcmp(id, "city") == 0) {
+    openCityModal();
     return;
   }
   if (strcmp(id, "bt") == 0) {
@@ -1451,6 +1786,7 @@ static void doAct(const char* id, int x, int y) {
     if (idx >= 0 && idx < n) {
       if (aps[idx].secured) {
         strlcpy(s_connSsid, aps[idx].ssid, sizeof(s_connSsid));
+        s_kbWhy = 0;
         Keyboard::startInput("输入密码 · 点确定连接", "");
         s_dirty = true;
       } else {
@@ -1467,6 +1803,49 @@ static void doAct(const char* id, int x, int y) {
     return;
   }
   if (strcmp(id, "w.cancel") == 0) {
+    s_modal = MOD_NONE;
+    s_needClear = true;
+    s_dirty = true;
+    return;
+  }
+
+  // ---- 城市弹窗 ----
+  if (strncmp(id, "c.it.", 5) == 0) {
+    const int idx = atoi(id + 5);
+    s_citySel = (int16_t)idx;
+    CityKind kind;
+    int payload = 0;
+    const char* name = "";
+    const char* sub = nullptr;
+    if (!cityListNth(idx, kind, payload, name, sub)) return;
+    if (kind == CK_AUTO) {
+      goAutoLocate();
+      return;
+    }
+    if (kind == CK_PROV) {
+      s_cityProv = (int8_t)payload;
+      s_cityFilter[0] = 0;
+      s_citySel = 0;
+      s_dirty = true;
+      return;
+    }
+    pinCityIdx(payload);
+    return;
+  }
+  if (strcmp(id, "c.search") == 0) {
+    s_kbWhy = 1;
+    Keyboard::startInput("城市拼音 · 如 sz / suzhou", s_cityFilter);
+    s_dirty = true;
+    return;
+  }
+  if (strcmp(id, "c.back") == 0) {
+    if (s_cityFilter[0]) s_cityFilter[0] = 0;
+    else s_cityProv = -1;
+    s_citySel = 0;
+    s_dirty = true;
+    return;
+  }
+  if (strcmp(id, "c.cancel") == 0) {
     s_modal = MOD_NONE;
     s_needClear = true;
     s_dirty = true;
@@ -1536,7 +1915,8 @@ static void doAct(const char* id, int x, int y) {
   }
   // 点到弹窗卡片空白/背景:WiFi 列表和连接中不误关,其他点外关闭
   if (strcmp(id, "x.dismiss") == 0) {
-    if (s_modal != MOD_WIFI && s_modal != MOD_CONNECTING && s_modal != MOD_NONE) {
+    if (s_modal != MOD_WIFI && s_modal != MOD_CONNECTING &&
+        s_modal != MOD_CITY && s_modal != MOD_NONE) {
       s_modal = MOD_NONE;
       s_needClear = true;
       s_dirty = true;

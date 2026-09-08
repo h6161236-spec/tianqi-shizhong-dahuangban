@@ -222,17 +222,19 @@ static const int CAL_POINT_Y[CAL_POINT_COUNT] = {24, 24, 216, 216, 120};
 
 /** 采样一次触摸。返回 false = 未按下。坐标已映射到 320x240。 */
 bool touchSample(int* ox, int* oy) {
+  static uint32_t lastGoodMs = 0;
   int channelA = 0, channelB = 0;
   if (!touchReadRaw(&channelA, &channelB)) {
     // IRQ 正常的板子上,按住期间偶发一批压力/离散度不合格时保留最后
     // 坐标;IRQ 不可靠的板子则由 touchUpdate 的连续两帧失败确认抬手。
-    if (g_touch.down && digitalRead(TP_IRQ) == LOW) {
+    if (g_touch.down && digitalRead(TP_IRQ) == LOW && millis() - lastGoodMs < 80) {
       *ox = g_touch.x;
       *oy = g_touch.y;
       return true;
     }
     return false;
   }
+  lastGoodMs = millis();
 
   if (g_touchCal.valid) {
     const float fx = g_touchCal.xA * channelA + g_touchCal.xB * channelB +
@@ -736,13 +738,14 @@ static void bleInit() {
 
 // ---- pages.h 声明的四个接口(非演示构建的真实现) ----
 
-void bleSendBtn(const char* btn) {
-  if (!g_notifyChar || !g_media.connected) return;
+bool bleSendBtn(const char* btn) {
+  if (!g_notifyChar || !g_media.connected) return false;
   char msg[20];
   snprintf(msg, sizeof(msg), "BTN|%s\n", btn);
   g_notifyChar->setValue((const uint8_t*)msg, strlen(msg));
   const bool sent = g_notifyChar->notify();
   Serial.printf("[ble] btn=%s notify=%s\n", btn, sent ? "ok" : "failed");
+  return sent;
 }
 
 void bleDisconnectPeer() {
@@ -771,7 +774,7 @@ void bleSetAdv(bool on) {
 
 #else   // DEMO_MODE
 
-void bleSendBtn(const char*) {}
+bool bleSendBtn(const char*) { return false; }
 void bleDisconnectPeer() {}
 void bleRestartAdv() {}
 void bleSetAdv(bool) {}
@@ -786,6 +789,7 @@ static uint32_t s_wifiUpMs = 0;
 static uint32_t s_lastWxMs = 0;
 static bool s_sntpStarted = false;
 static bool s_timeOk = false;
+static bool s_locatedThisUp = false;
 
 static void sntpStart() {
   char tz[16];
@@ -802,6 +806,19 @@ static void sntpStart() {
  */
 static void weatherFetch() {
   if (!WifiMgr::isConnected()) return;
+  // 自动模式:每次重新连上网先认一次城市,之后 30 分钟一轮只拉天气不再定位
+  if (Wx::isAuto() && !s_locatedThisUp) {
+    s_locatedThisUp = true;
+    if (Wx::locate()) {
+      Serial.printf("[loc] %s %.2f %.2f\n", Wx::place().name, Wx::place().lat,
+                    Wx::place().lon);
+      char msg[40];
+      snprintf(msg, sizeof(msg), "定位到 %s", Wx::place().name);
+      UI::toast(msg);
+    } else {
+      Serial.println("[loc] ip-api failed, keep current city");
+    }
+  }
   if (Wx::fetch()) {
     UI::markDirty();
     Serial.println("[wx] fetched");
@@ -907,6 +924,7 @@ void loop() {
     s_wifiUpMs = up ? now : 0;
     UI::markDirty();   // 状态条 wifi 图标变色
     if (up) {
+      s_locatedThisUp = false;
       Serial.printf("[wifi] connected, ip %s\n", WifiMgr::getIPAddress());
       if (!s_sntpStarted) sntpStart();
     } else {

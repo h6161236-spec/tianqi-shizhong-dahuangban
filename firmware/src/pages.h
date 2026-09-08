@@ -4,9 +4,9 @@
  *  pages.h —— 5 页面系统:渲染 / 输入 / 偏好 / 弹窗 / 演示数据
  * =====================================================================
  *  页面:时钟(场景动画,110ms 全帧重绘) / 音乐(频谱 100ms) /
- *  天气(两种视图) / 日期(农历月历) / 设置(8 行 + 滚动)。
+ *  天气(两种视图) / 日期(农历月历) / 设置(9 行 + 滚动)。
  *  弹窗:WiFi 列表 → 密码键盘(复用 keyboard 模块) → 连接中 /
- *  蓝牙面板 / 恢复默认 / 重启确认。
+ *  蓝牙面板 / 城市选择(热门+省份+拼音) / 恢复默认 / 重启确认。
  *
  *  main.cpp 的职责:初始化各模块 → 循环里调 UI::service(dt)(内部
  *  自己决定何时重绘)+ 触摸事件转 UI::handleGesture/handleTap,
@@ -38,7 +38,7 @@ struct MediaState {
   char peer[24];         // 对端设备名
   char title[40];
   char artist[40];
-  char lyric[64];        // 当前行(BLE 模式只有一行)
+  char lyric[256];       // 当前行(BLE 模式只有一行,长句会在歌词区滚动)
   int32_t pos, dur;      // 秒;pos<0 = 手机端没推进度
   bool playing;
   uint8_t spec[16];      // 0..255
@@ -48,7 +48,7 @@ struct MediaState {
 extern MediaState g_media;
 
 // ---- 由 main.cpp 提供(见上) ----
-void bleSendBtn(const char* btn);
+bool bleSendBtn(const char* btn);
 void bleDisconnectPeer();
 void bleRestartAdv();
 void bleSetAdv(bool on);

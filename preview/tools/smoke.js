@@ -15,13 +15,15 @@ let js = m[1];
 
 /* ---- stubs ---- */
 const noop = () => {};
+const drawnText = [];
 const ctxStub = () => {
   const c = {
     canvas: { width: 320, height: 240 },
     save: noop, restore: noop, beginPath: noop, closePath: noop, moveTo: noop,
     lineTo: noop, arc: noop, arcTo: noop, ellipse: noop, bezierCurveTo: noop,
     quadraticCurveTo: noop, rect: noop, fill: noop, stroke: noop, clip: noop,
-    fillRect: noop, strokeRect: noop, clearRect: noop, fillText: noop,
+    fillRect: noop, strokeRect: noop, clearRect: noop,
+    fillText: (...args) => drawnText.push(args),
     strokeText: noop, translate: noop, scale: noop, rotate: noop, setTransform: noop,
     drawImage: noop, createLinearGradient: () => ({ addColorStop: noop }),
     measureText: s => ({ width: String(s).length * 6 }),
@@ -78,9 +80,11 @@ js += `
   setBt: typeof setBt === 'function' ? setBt : null,
   tick: dt => { sceneClock += dt; tickSpec(dt); tickNetwork(dt);
                 S.pkFrame = Math.floor(sceneClock * PK_SPD / 22 * 4) % 4;
-                for (const t of TUFTS) { t.x -= PK_SPD * dt; if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng()*2); } }
+                if (S.page === 0) {
+                  for (const t of TUFTS) { t.x -= PK_SPD * dt; if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng()*2); } }
+                }
                 if (S.pkJump !== null) { S.pkJump += dt / .55; if (S.pkJump >= 1) S.pkJump = null; } },
-  HITS: () => HITS,
+  HITS: () => HITS, txtMarquee,
 };
 `;
 
@@ -117,6 +121,18 @@ for (const v of variants) {
 }
 T.S.btState = 'con'; T.S.playing = true;
 
+/* ---- 2b. long lyrics pause at the start, then move left ---- */
+try {
+  const longLyric = '这是一句明显超过右侧显示区宽度的长歌词，后半句也必须滚动出来';
+  drawnText.length = 0;
+  T.txtMarquee(longLyric, 162, 112, 148, '#fff', '12px sans-serif', 1.0);
+  const heldX = drawnText[drawnText.length - 1][1];
+  drawnText.length = 0;
+  T.txtMarquee(longLyric, 162, 112, 148, '#fff', '12px sans-serif', 2.0);
+  const movingX = drawnText[0][1];
+  if (!(movingX < heldX)) throw new Error(`expected ${movingX} < ${heldX}`);
+} catch (e) { fail('long lyric marquee', e); }
+
 /* ---- 3. every hotspot action fires without throwing ---- */
 const ids = new Set();
 for (let p = 0; p < T.PAGES.length; p++) {
@@ -124,7 +140,7 @@ for (let p = 0; p < T.PAGES.length; p++) {
   T.drawFrame();
   for (const h of T.HITS()) ids.add(h.id);
 }
-for (const kind of ['wifi', 'bt', 'reset', 'reboot']) {
+for (const kind of ['wifi', 'bt', 'reset', 'reboot', 'city']) {
   T.S.page = 4; T.openModal(kind); T.drawFrame();
   for (const h of T.HITS()) ids.add(h.id);
 }
@@ -162,6 +178,23 @@ for (const net of ['online', 'offline', 'unconfig']) {
   }
 }
 T.S.wxOvr = 'auto'; T.S.todOvr = 'auto'; T.S.net = 'online';
+
+/* ---- 5b. city picker: auto / pin / province / pinyin ---- */
+try {
+  T.S.page = 4; T.S.cityMode = 'auto';
+  T.openModal('city'); T.drawFrame();
+  T.goVert(1); T.goVert(-1); T.drawFrame();
+  T.doAct('c.it.0');
+  T.openModal('city'); T.doAct('c.it.1');
+  T.openModal('city'); T.doAct('c.search'); T.drawFrame();
+  T.S.modal.pass = 'sz'; T.doAct('k.ok'); T.drawFrame();
+  T.doAct('c.it.0');
+  T.openModal('city');
+  const nProv = 1 + 20; /* auto + 20 hot → first province */
+  T.doAct('c.it.' + nProv); T.drawFrame();
+  T.doAct('c.back'); T.doAct('c.cancel');
+} catch (e) { fail('city picker', e); }
+T.S.modal = null;
 
 /* ---- 6. long run: pikachu travel wrap-around, dust pool, spectrum decay ---- */
 T.S.page = 0; T.S.pkJump = 0;

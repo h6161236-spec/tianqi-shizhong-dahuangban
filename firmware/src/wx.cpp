@@ -11,7 +11,10 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <math.h>
+#include <stdlib.h>
 
+#include "cities.h"
 #include "config.h"
 #include "lunar.h"
 #include "wifi_config.h"
@@ -20,7 +23,42 @@ namespace Wx {
 namespace {
 
 Data g_wx = {};
+Place g_place = {};
 bool g_inited = false;
+
+void defaultPlace() {
+  strlcpy(g_place.name, CFG_CITY_NAME, sizeof(g_place.name));
+  g_place.lat = (float)atof(CFG_LAT);
+  g_place.lon = (float)atof(CFG_LON);
+  g_place.autoMode = true;
+}
+
+void savePlace() {
+  Preferences p;
+  if (!p.begin(NVS_LOC_NS, false)) return;
+  p.putUChar("a", g_place.autoMode ? 1 : 0);
+  p.putString("n", g_place.name);
+  p.putFloat("la", g_place.lat);
+  p.putFloat("lo", g_place.lon);
+  p.end();
+}
+
+void loadPlace() {
+  defaultPlace();
+  Preferences p;
+  if (!p.begin(NVS_LOC_NS, true)) return;
+  const String n = p.getString("n", "");
+  const float la = p.getFloat("la", NAN);
+  const float lo = p.getFloat("lo", NAN);
+  const uint8_t a = p.getUChar("a", 1);
+  p.end();
+  if (n.isEmpty() || !isfinite(la) || !isfinite(lo)) return;
+  if (la < -90.0f || la > 90.0f || lo < -180.0f || lo > 180.0f) return;
+  strlcpy(g_place.name, n.c_str(), sizeof(g_place.name));
+  g_place.lat = la;
+  g_place.lon = lo;
+  g_place.autoMode = a != 0;
+}
 
 // ---- 演示数据(与预览 makeDemoWeather 同源) ----
 void makeDemo() {
@@ -28,7 +66,8 @@ void makeDemo() {
   g_wx.valid = true;
   g_wx.demo = true;
   g_wx.fetchedAt = time(nullptr) > 1000000000L ? (int32_t)time(nullptr) : 0;
-  strncpy(g_wx.city, CFG_CITY_NAME, sizeof(g_wx.city) - 1);
+  strncpy(g_wx.city, g_place.name[0] ? g_place.name : CFG_CITY_NAME,
+          sizeof(g_wx.city) - 1);
   g_wx.wmo = 2;
   g_wx.temp = 26;
   g_wx.feels = 28;
@@ -116,8 +155,12 @@ bool loadCache() {
 
 void init() {
   g_inited = true;
+  Cities::init();
+  loadPlace();
   // 顺序:有缓存先用缓存(断网重启也有数);没缓存再上演示数据
   if (!loadCache()) makeDemo();
+  if (g_wx.valid && g_place.name[0])
+    strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
 }
 
 const Data& data() {
@@ -131,7 +174,77 @@ void reset() {
     prefs.clear();
     prefs.end();
   }
+  if (prefs.begin(NVS_LOC_NS, false)) {
+    prefs.clear();
+    prefs.end();
+  }
+  defaultPlace();
   makeDemo();
+}
+
+const Place& place() { return g_place; }
+bool isAuto() { return g_place.autoMode; }
+
+void setPlace(const char* name, float lat, float lon, bool pin) {
+  if (name && name[0]) strlcpy(g_place.name, name, sizeof(g_place.name));
+  g_place.lat = lat;
+  g_place.lon = lon;
+  g_place.autoMode = !pin;
+  savePlace();
+  strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
+}
+
+bool locate() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  WiFiClient client;
+  // lang=zh-CN 给中文城市名;fields 裁掉没用的大段
+  if (!http.begin(client,
+                  "http://ip-api.com/json/?fields=status,message,country,"
+                  "regionName,city,lat,lon&lang=zh-CN")) {
+    return false;
+  }
+  http.setConnectTimeout(5000);
+  http.setTimeout(7000);
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return false;
+  const char* st = doc["status"] | "";
+  if (strcmp(st, "success") != 0) return false;
+
+  const float lat = doc["lat"] | NAN;
+  const float lon = doc["lon"] | NAN;
+  if (!isfinite(lat) || !isfinite(lon)) return false;
+
+  const char* city = doc["city"] | "";
+  const char* region = doc["regionName"] | "";
+  const char* use = (city && city[0]) ? city : region;
+  if (!use || !use[0]) use = "当前位置";
+
+  // 能对上名录就用名录的标准名和坐标(open-meteo 更稳);对不上就用接口原值
+  const int idx = Cities::findLoose(use);
+  if (idx >= 0) {
+    const Cities::Rec& c = Cities::LIST[idx];
+    strlcpy(g_place.name, c.name, sizeof(g_place.name));
+    g_place.lat = c.lat;
+    g_place.lon = c.lon;
+  } else {
+    strlcpy(g_place.name, use, sizeof(g_place.name));
+    g_place.lat = lat;
+    g_place.lon = lon;
+  }
+  g_place.autoMode = true;
+  savePlace();
+  strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
+  return true;
 }
 
 bool fetch() {
@@ -140,12 +253,12 @@ bool fetch() {
   // current + daily 7 天。不用 hourly —— 页面上没有逐时预报的位子。
   char url[320];
   snprintf(url, sizeof(url),
-           "http://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
+           "http://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
            "weather_code,wind_speed_10m"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min"
            "&forecast_days=7&timezone=auto",
-           CFG_LAT, CFG_LON);
+           (double)g_place.lat, (double)g_place.lon);
 
   HTTPClient http;
   WiFiClient client;
@@ -167,7 +280,7 @@ bool fetch() {
   nx.valid = true;
   nx.demo = false;
   nx.fetchedAt = time(nullptr) > 1000000000L ? (int32_t)time(nullptr) : 0;
-  strlcpy(nx.city, CFG_CITY_NAME, sizeof(nx.city));
+  strlcpy(nx.city, g_place.name, sizeof(nx.city));
   nx.wmo = doc["current"]["weather_code"] | 0;
   nx.temp = (int)llroundf(doc["current"]["temperature_2m"] | 0.0f);
   nx.feels = (int)llroundf(doc["current"]["apparent_temperature"] | 0.0f);

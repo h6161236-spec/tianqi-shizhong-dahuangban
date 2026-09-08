@@ -10,7 +10,7 @@
 #define CFG_WIFI_SSID ""
 #define CFG_WIFI_PASS ""
 
-// 定位:默认苏州(与网页预览一致)。想改城市改这三项
+// 定位出厂默认(联网后会被 IP 自动定位覆盖;设置里可手选钉死)
 #define CFG_CITY_NAME "苏州"
 #define CFG_LAT "31.30"
 #define CFG_LON "120.58"
@@ -68,13 +68,11 @@
 #define CLOCK_FRAME_MS 110
 // 音乐页频谱动画帧
 #define MUSIC_FRAME_MS 100
-// 天气/日期/设置页:只有底部 26px 的共用草地页脚在滚,页面主体按需重绘。
-// 草丛以 46px/s 走,133ms ≈ 6px/帧,滚动看着连续又不占 SPI 带宽。
-#define FOOT_FRAME_MS  133
-// 其他页(无动画)只需按需重绘;分钟变化时刷新
+// 天气/日期/设置页无动画,按需重绘;分钟变化时刷新
 #define IDLE_FRAME_MS  1000
 
 // ---------------------------------------------------------------- NVS 命名空间
 #define NVS_UI_NS    "uicfg"     // 界面偏好(亮度/频谱样式/天气视图)
 #define NVS_WX_NS    "wx1"       // 天气缓存
+#define NVS_LOC_NS   "loc1"      // 城市定位(自动/钉死 + 经纬)
 #define NVS_TOUCH_NS "touchcal"  // 触摸校准(参考工程同款,直接搬)

@@ -14,9 +14,8 @@
  *     冻雨地面冰晶闪光
  *   - 皮卡丘固定在 (130,140) 奔跑,影子随跳跃缩放
  *
- *  画法全是「不透明直接画屏」,只用于全帧重绘的时钟页(先画场景再叠
- *  状态栏/时间/角标)。所有 24bit 颜色在内部混合,落到屏幕前转 RGB565,
- *  和预览的量化顺序一致。
+ *  动的层(云/草/皮卡丘)离屏合成再一次推送,避免屏上「先擦后画」闪烁。
+ *  所有 24bit 颜色在内部混合,落到屏幕前转 RGB565,和预览的量化顺序一致。
  */
 
 #include <TFT_eSPI.h>
@@ -67,6 +66,11 @@ float nightness(float hourF);
 void draw(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
           bool withPika);
 
+/** 使缓存场景下次绘制完整重建背景。页面切换后必须调用。 */
+void invalidateCache();
+/** Toast 退出后仅恢复地面提示区，不触发整片天空重建。 */
+void restoreGroundOverlay();
+
 // ---- 给页面叠元素用的取样色(和当帧场景同一路调色,纯函数) ----
 
 /** 场景内 y 行的天空色(含组调色;越界取端点) */
@@ -86,14 +90,13 @@ constexpr int FOOT_H = 26;
 constexpr int FOOT_TOP = 240 - FOOT_H;
 
 /**
- * 画共用页脚:底色→草地的 8px 浅色过渡 + 草皮 + 视差草丛。
- * 草丛与时钟页共用同一份 TUFTS 数据和同一速度,所以整机是同一片地面。
- * @param dt 本帧时间步(秒);>0 时推进草丛滚动。0 = 静态渲染
+ * 画共用页脚:底色→草地的 8px 浅色过渡 + 草皮 + 草丛。
+ * 草丛不滚动(皮卡丘只在时钟页跑,其它页地面是静止装饰)。
  * @param bg 页面底色(过渡的起点,通常 TH::BG)
  */
-void footer(TFT_eSPI& t, float dt, uint16_t bg);
+void footer(TFT_eSPI& t, uint16_t bg);
 
-/** 只推进草丛滚动,不画(时钟页自己画地面,但要保持共用相位) */
+/** 推进时钟页草丛滚动(其它页不要调) */
 void advanceGround(float dt);
 
 }  // namespace Scene

@@ -106,7 +106,6 @@ void blitRows(TFT_eSPI& t, int x, int y, const char* rows, int nRows,
               int rowLen, int stride, int S = Pika::PK_SC) {
   for (int r = 0; r < nRows; ++r) {
     const char* line = rows + (size_t)r * stride;
-    // 连续同色像素合并成一条 fillRect,减少调用次数
     int runStart = -1;
     uint16_t runC = 0;
     for (int c = 0; c <= rowLen; ++c) {
@@ -172,10 +171,6 @@ int draw(TFT_eSPI& t, int x, int y) {
   blitRows(t, x + 13 * PK_SC, by + 16 * PK_SC, &ARMS[f][0][0], 2,  5,  6);
 
   return (int)jy;
-}
-
-void drawHead(TFT_eSPI& t, int x, int y, int scale) {
-  blitRows(t, x, y, &BODY[0][0], 20, 24, 25, scale);
 }
 
 }  // namespace Pika

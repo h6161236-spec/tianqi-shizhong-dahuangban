@@ -1,13 +1,15 @@
 #pragma once
 /**
  * =====================================================================
- *  wx.h —— 天气数据:拉取 / 演示 / NVS 缓存 / 离线角标
+ *  wx.h —— 天气数据:拉取 / 演示 / NVS 缓存 / 离线角标 / 定位
  * =====================================================================
  *  策略(与网页预览一致):
  *   - 未配网:演示数据,角标「未配网 · 演示数据」,点了去设置页配网
  *   - 在线:HTTP 拉 open-meteo 7 天预报(不用 TLS,剩余堆跑不动握手),
  *     每 30 分钟刷一次,拉到就写 NVS —— 重启后断网也有数据
  *   - 断网:继续用缓存,角标「离线 · X分钟前更新」;时钟照走(板载 RTC)
+ *   - 定位:默认自动。WiFi 连上后用 ip-api(HTTP,中文)认城市,设置里可
+ *     改成手选并钉死;自动模式下每次重新连网都会再认一次(带着走)。
  */
 
 #include <stddef.h>
@@ -37,6 +39,13 @@ struct Data {
   uint8_t dayN;    // 实际天数 0-7
 };
 
+/** 当前使用的地点(自动定位或手选钉死) */
+struct Place {
+  char name[20];
+  float lat, lon;
+  bool autoMode;   // true = 连网后用 IP 再认一次
+};
+
 /** 上电调用:读 NVS 缓存;没有缓存且未配网则填演示数据 */
 void init();
 
@@ -47,6 +56,19 @@ bool fetch();
 void refreshDemo();
 
 const Data& data();
+
+const Place& place();
+bool isAuto();
+
+/** 手选城市:pin=true 钉死,之后连网不再自动改 */
+void setPlace(const char* name, float lat, float lon, bool pin);
+
+/**
+ * 公网 IP 反查城市(ip-api.com,HTTP,中文)。
+ * 成功则写入地点(保持 autoMode=true)并返回 true。
+ * 失败保留原地点。
+ */
+bool locate();
 
 /** WMO weather_code → 中文名(28 个全覆盖,预览同表) */
 const char* wmoText(int wmo);
@@ -60,7 +82,7 @@ const char* badgeText(char* buf, size_t n);
 /** 第 i 天的标签:"今天"/"明天"/"周一"…"周日"。越界返回 "?" */
 const char* dayLabel(int i);
 
-/** 恢复默认:清 NVS 缓存,回到演示数据 */
+/** 恢复默认:清 NVS 缓存和定位,回到演示数据 + 自动定位默认城 */
 void reset();
 
 }  // namespace Wx

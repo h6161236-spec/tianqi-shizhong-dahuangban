@@ -216,37 +216,29 @@ void pushStripTransparent(int x, int y, uint16_t transparentColor) {
 }
 
 void pushStripH(int x, int y, int h) {
+  if (h <= 0) return;
   if (h >= GFX_STRIP_H) { pushStrip(x, y); return; }
-  // Sprite 内存是连续的 RGB565,整块宽度一致,所以取前 h 行直接就是
-  // 前 w*h 个像素,不用处理跨距。Sprite 内部按字节交换存,推之前要开 swap。
-  const bool sw = g_tft->getSwapBytes();
-  g_tft->setSwapBytes(true);
-  g_tft->pushImage(x, y, GFX_STRIP_W, h, (uint16_t*)g_strip->getPointer());
-  g_tft->setSwapBytes(sw);
+  // 使用库自带的裁剪推送：16 位 Sprite 已按传输字节序存储，库内部
+  // setSwapBytes(false)，并在结束后恢复屏幕设置。不能再次交换。
+  g_strip->pushSprite(x, y, 0, 0, GFX_STRIP_W, h);
   Txt::target(*g_tft);
 }
 
 void pushBigRegion(int x, int y, int w, int h, int srcX, int srcY) {
-  // big 的行跨距是 GFX_BIG_W,子区域跨行不连续,只能逐行推。
-  // 每行一次 pushImage,行高 1,调用开销换正确性;时钟页 ~48 行,够快。
   if (w <= 0 || h <= 0) return;
-  if (srcX == 0 && w == GFX_BIG_W) {
-    // 整行宽特例:连续,一次推完
-    const bool sw = g_tft->getSwapBytes();
-    g_tft->setSwapBytes(true);
-    g_tft->pushImage(x, y, w, h, (uint16_t*)g_big->getPointer() +
-                                       (size_t)srcY * GFX_BIG_W);
-    g_tft->setSwapBytes(sw);
-  } else {
-    const bool sw = g_tft->getSwapBytes();
-    g_tft->setSwapBytes(true);
-    for (int row = 0; row < h; ++row) {
-      g_tft->pushImage(x, y + row, w, 1,
-                       (uint16_t*)g_big->getPointer() +
-                           (size_t)(srcY + row) * GFX_BIG_W + srcX);
-    }
-    g_tft->setSwapBytes(sw);
-  }
+  g_big->pushSprite(x, y, srcX, srcY, w, h);
+  Txt::target(*g_tft);
+}
+
+void pushStripRegion(int x, int y, int w, int h, int srcX, int srcY) {
+  if (w <= 0 || h <= 0) return;
+  g_strip->pushSprite(x, y, srcX, srcY, w, h);
+  Txt::target(*g_tft);
+}
+
+void pushDiscRegion(int x, int y, int w, int h, int srcX, int srcY) {
+  if (w <= 0 || h <= 0) return;
+  g_disc->pushSprite(x, y, srcX, srcY, w, h);
   Txt::target(*g_tft);
 }
 

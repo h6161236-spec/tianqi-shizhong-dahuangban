@@ -71,6 +71,8 @@ Gesture touchUpdate() {
   static uint8_t armCount = 0;
   static int armX = 0, armY = 0;
   static uint8_t missedSamples = 0;
+  static uint32_t armMs = 0, lastSampleMs = 0;
+  const uint32_t now = millis();
 
   if (!g_touch.down) {
     missedSamples = 0;
@@ -82,14 +84,19 @@ Gesture touchUpdate() {
     if (armCount == 0) {
       armX = x;
       armY = y;
+      armMs = now;
       armCount = 1;
       return GESTURE_NONE;
     }
 
-    // 两帧差得太远说明仍在落指/移动，重新从当前稳定候选开始。
-    if (abs(x - armX) > 30 || abs(y - armY) > 30) {
+    // 动画绘制可能拉长采样间隔。固定 30px 门槛会把每一帧的横滑都
+    // 当作噪声，始终无法按下；允许位移随真实间隔增长，仍丢弃跳点。
+    const uint32_t gap = now - armMs;
+    const int maxMotion = 30 + (int)(gap < 100 ? gap : 100);
+    if (gap > 250 || abs(x - armX) > maxMotion || abs(y - armY) > maxMotion) {
       armX = x;
       armY = y;
+      armMs = now;
       return GESTURE_NONE;
     }
 
@@ -97,9 +104,10 @@ Gesture touchUpdate() {
     g_touch.down = true;
     g_touch.x = x;  // 使用第二帧，不把首帧误差混进来
     g_touch.y = y;
-    g_touch.startX = x;
-    g_touch.startY = y;
-    g_touch.startMs = millis();
+    g_touch.startX = armX;
+    g_touch.startY = armY;
+    g_touch.startMs = armMs;
+    lastSampleMs = now;
 
     const HitBox* hit = hitFind(x, y);
     strncpy(g_touch.pressedHit, hit ? hit->id : "", sizeof(g_touch.pressedHit) - 1);
@@ -116,11 +124,9 @@ Gesture touchUpdate() {
     // 最新稳定坐标，避免原来的 2/3 旧值 IIR 让点击位置滞后。
     g_touch.x = x;
     g_touch.y = y;
-    if (millis() - g_touch.startMs < 60) {
-      // 落指最初 60ms 不计入滑动距离，但坐标始终使用最新稳定值。
-      g_touch.startX = x;
-      g_touch.startY = y;
-    }
+    lastSampleMs = now;
+    // 起点只在确认按下时记录一次。原先前 60ms 持续改写起点，会吞掉
+    // 快速横滑，导致时钟页看起来完全不能滑动。
     return GESTURE_NONE;
   }
 
@@ -128,7 +134,8 @@ Gesture touchUpdate() {
   if (++missedSamples < 2) return GESTURE_NONE;
   missedSamples = 0;
 
-  const uint32_t duration = millis() - g_touch.startMs;
+  // 只计算有效接触时间，松手消抖及慢帧等待不能把短滑动算成超时。
+  const uint32_t duration = lastSampleMs - g_touch.startMs;
   const int dx = g_touch.x - g_touch.startX;
   const int dy = g_touch.y - g_touch.startY;
   const int adx = abs(dx);

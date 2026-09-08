@@ -402,10 +402,11 @@ body::before {
             <option value="api">数据源:在线 API(open-meteo)</option>
           </select>
           <select id="citysel">
-            <option value="31.30,120.58">城市:苏州</option>
-            <option value="39.90,116.41">城市:北京</option>
-            <option value="31.23,121.47">城市:上海</option>
-            <option value="23.13,113.26">城市:广州</option>
+            <option value="auto">城市:自动定位</option>
+            <option value="苏州">城市:苏州</option>
+            <option value="北京">城市:北京</option>
+            <option value="上海">城市:上海</option>
+            <option value="广州">城市:广州</option>
           </select>
           <button class="actbtn" id="refetch">立即刷新天气</button>
         </div>
@@ -634,6 +635,19 @@ const txtClip = (s, x, y, maxW, c, f = FONT.CN12, align = 'left') => {
   let out = s;
   while (out.length > 1 && g.measureText(out + '…').width > maxW) out = out.slice(0, -1);
   txt(out + '…', x, y, c, f, align);
+};
+const txtMarquee = (s, x, y, maxW, c, f, elapsed = 0) => {
+  g.font = f;
+  const width = g.measureText(s).width;
+  if (width <= maxW) { txt(s, x, y, c, f); return; }
+  const gap = 44, hold = 1.2, speed = 24;
+  const offset = elapsed <= hold ? 0 : ((elapsed - hold) * speed) % (width + gap);
+  g.save();
+  g.beginPath(); g.rect(x, y - 14, maxW, 18); g.clip();
+  txt(s, x - offset, y, c, f);
+  if (width + gap - offset < maxW)
+    txt(s, x + width + gap - offset, y, c, f);
+  g.restore();
 };
 /* 白字带阴影:时钟页叠在天空上用 */
 const txtShadow = (s, x, y, c, f, align = 'left') => {
@@ -1007,7 +1021,12 @@ const BOLT = { t: 0, next: 2.5, x: 150, seed: 0 };
 
 /* ---- 地面装饰(草丛/尘土) ---- */
 const TUFTS = [];
-for (let i = 0; i < 14; i++) TUFTS.push({ x: i * 24 + (rng()*14 - 7), h: 2 + Math.round(rng()*2) });
+const FOOT_TUFTS = [];
+for (let i = 0; i < 14; i++) {
+  const t = { x: i * 24 + (rng()*14 - 7), h: 2 + Math.round(rng()*2) };
+  TUFTS.push(t);
+  FOOT_TUFTS.push({ x: t.x, h: t.h });
+}
 const DUST = [];   /* 皮卡丘跑动扬尘 */
 
 /* =====================================================================
@@ -1242,6 +1261,7 @@ const S = {
   net: 'online',
   netSource: 'demo',          /* demo | api */
   city: { name:'苏州', lat:31.30, lon:120.58 },
+  cityMode: 'auto',          /* auto=连网后按 IP 认城市; pin=手选钉死 */
   refetchBusy: false,
   spec: new Array(16).fill(0),
   peak: new Array(16).fill(0),
@@ -1251,7 +1271,7 @@ const S = {
   idleT: 0, manualT: 0,
   seek: null,
   press: null,
-  modal: null,               /* {kind, sel, ssid, pass, kbShift, kbNum, scan, connT} */
+  modal: null,               /* {kind, sel, ssid, pass, kbShift, kbNum, connT, cityProv, citySel, cityFilter, kbWhy} */
   toast: null, toastT: 0,
   slide: 0,
   pkJump: null,              /* 皮卡丘跳跃相位 0..1 */
@@ -1261,9 +1281,413 @@ const S = {
 };
 
 /* ---- 天气缓存:一次拉 7 天,断网沿用 ---- */
-const CITIES = {
-  '苏州': { lat:31.30, lon:120.58 }, '北京': { lat:39.90, lon:116.41 },
-  '上海': { lat:31.23, lon:121.47 }, '广州': { lat:23.13, lon:113.26 },
+/* 与 firmware/src/cities.cpp 同步:中国地级市 + 直辖市 + 港澳台 */
+const PROV_NAMES = ["直辖市","河北","山西","内蒙古","辽宁","吉林","黑龙江","江苏","浙江","安徽","福建","江西","山东","河南","湖北","湖南","广东","广西","海南","四川","贵州","云南","西藏","陕西","甘肃","青海","宁夏","新疆","港澳台"];
+const HOT_NAMES = ["北京","上海","广州","深圳","杭州","成都","重庆","武汉","南京","苏州","西安","天津","郑州","长沙","青岛","宁波","东莞","合肥","佛山","沈阳"];
+const CITY_RAW = `北京|bei jing|0|39.90|116.41
+天津|tian jin|0|39.12|117.20
+上海|shang hai|0|31.23|121.47
+重庆|chong qing|0|29.56|106.55
+石家庄|shi jia zhuang|1|38.04|114.51
+唐山|tang shan|1|39.63|118.18
+秦皇岛|qin huang dao|1|39.94|119.60
+邯郸|han dan|1|36.63|114.49
+邢台|xing tai|1|37.07|114.50
+保定|bao ding|1|38.87|115.46
+张家口|zhang jia kou|1|40.82|114.89
+承德|cheng de|1|40.95|117.96
+沧州|cang zhou|1|38.30|116.84
+廊坊|lang fang|1|39.52|116.70
+衡水|heng shui|1|37.74|115.67
+太原|tai yuan|2|37.87|112.55
+大同|da tong|2|40.08|113.30
+阳泉|yang quan|2|37.86|113.58
+长治|chang zhi|2|36.20|113.12
+晋城|jin cheng|2|35.49|112.85
+朔州|shuo zhou|2|39.33|112.43
+晋中|jin zhong|2|37.69|112.75
+运城|yun cheng|2|35.03|111.01
+忻州|xin zhou|2|38.42|112.73
+临汾|lin fen|2|36.09|111.52
+吕梁|lv liang|2|37.52|111.14
+呼和浩特|hu he hao te|3|40.84|111.75
+包头|bao tou|3|40.66|109.84
+乌海|wu hai|3|39.67|106.83
+赤峰|chi feng|3|42.27|118.89
+通辽|tong liao|3|43.65|122.26
+鄂尔多斯|e er duo si|3|39.61|109.78
+呼伦贝尔|hu lun bei er|3|49.22|119.77
+巴彦淖尔|ba yan nao er|3|40.74|107.39
+乌兰察布|wu lan cha bu|3|41.03|113.13
+兴安盟|xing an meng|3|46.08|122.04
+锡林郭勒盟|xi lin guo le meng|3|43.93|116.05
+阿拉善盟|a la shan meng|3|38.85|105.73
+沈阳|shen yang|4|41.81|123.43
+大连|da lian|4|38.91|121.61
+鞍山|an shan|4|41.11|122.99
+抚顺|fu shun|4|41.88|123.96
+本溪|ben xi|4|41.30|123.77
+丹东|dan dong|4|40.13|124.38
+锦州|jin zhou|4|41.10|121.14
+营口|ying kou|4|40.67|122.24
+阜新|fu xin|4|42.02|121.67
+辽阳|liao yang|4|41.27|123.24
+盘锦|pan jin|4|41.12|122.07
+铁岭|tie ling|4|42.29|123.84
+朝阳|chao yang|4|41.57|120.45
+葫芦岛|hu lu dao|4|40.71|120.84
+长春|chang chun|5|43.82|125.32
+吉林|ji lin|5|43.84|126.55
+四平|si ping|5|43.17|124.35
+辽源|liao yuan|5|42.89|125.14
+通化|tong hua|5|41.73|125.94
+白山|bai shan|5|41.94|126.42
+松原|song yuan|5|45.14|124.83
+白城|bai cheng|5|45.62|122.84
+延边|yan bian|5|42.89|129.51
+哈尔滨|ha er bin|6|45.80|126.54
+齐齐哈尔|qi qi ha er|6|47.35|123.92
+鸡西|ji xi|6|45.30|130.97
+鹤岗|he gang|6|47.33|130.30
+双鸭山|shuang ya shan|6|46.65|131.16
+大庆|da qing|6|46.59|125.10
+伊春|yi chun|6|47.73|128.90
+佳木斯|jia mu si|6|46.80|130.32
+七台河|qi tai he|6|45.77|131.00
+牡丹江|mu dan jiang|6|44.55|129.63
+黑河|hei he|6|50.25|127.53
+绥化|sui hua|6|46.64|126.99
+大兴安岭|da xing an ling|6|52.34|124.71
+南京|nan jing|7|32.06|118.80
+无锡|wu xi|7|31.49|120.31
+徐州|xu zhou|7|34.20|117.28
+常州|chang zhou|7|31.81|119.97
+苏州|su zhou|7|31.30|120.58
+南通|nan tong|7|32.02|120.89
+连云港|lian yun gang|7|34.60|119.22
+淮安|huai an|7|33.55|119.11
+盐城|yan cheng|7|33.35|120.16
+扬州|yang zhou|7|32.39|119.42
+镇江|zhen jiang|7|32.19|119.45
+泰州|tai zhou|7|32.48|119.92
+宿迁|su qian|7|33.96|118.28
+杭州|hang zhou|8|30.27|120.15
+宁波|ning bo|8|29.87|121.54
+温州|wen zhou|8|28.00|120.70
+嘉兴|jia xing|8|30.75|120.76
+湖州|hu zhou|8|30.89|120.09
+绍兴|shao xing|8|30.00|120.58
+金华|jin hua|8|29.08|119.65
+衢州|qu zhou|8|28.97|118.87
+舟山|zhou shan|8|30.00|122.21
+台州|tai zhou|8|28.66|121.42
+丽水|li shui|8|28.45|119.92
+合肥|he fei|9|31.82|117.23
+芜湖|wu hu|9|31.35|118.43
+蚌埠|beng bu|9|32.92|117.39
+淮南|huai nan|9|32.63|117.00
+马鞍山|ma an shan|9|31.67|118.51
+淮北|huai bei|9|33.95|116.80
+铜陵|tong ling|9|30.94|117.81
+安庆|an qing|9|30.53|117.05
+黄山|huang shan|9|29.71|118.34
+滁州|chu zhou|9|32.26|118.32
+阜阳|fu yang|9|32.90|115.81
+宿州|su zhou|9|33.65|116.96
+六安|lu an|9|31.73|116.51
+亳州|bo zhou|9|33.84|115.78
+池州|chi zhou|9|30.67|117.49
+宣城|xuan cheng|9|30.95|118.76
+福州|fu zhou|10|26.07|119.30
+厦门|xia men|10|24.48|118.09
+莆田|pu tian|10|25.45|119.01
+三明|san ming|10|26.27|117.64
+泉州|quan zhou|10|24.87|118.68
+漳州|zhang zhou|10|24.51|117.65
+南平|nan ping|10|26.64|118.18
+龙岩|long yan|10|25.08|117.03
+宁德|ning de|10|26.67|119.55
+南昌|nan chang|11|28.68|115.86
+景德镇|jing de zhen|11|29.27|117.18
+萍乡|ping xiang|11|27.62|113.85
+九江|jiu jiang|11|29.71|116.00
+新余|xin yu|11|27.82|114.92
+鹰潭|ying tan|11|28.26|117.07
+赣州|gan zhou|11|25.83|114.93
+吉安|ji an|11|27.11|114.97
+宜春|yi chun|11|27.80|114.42
+抚州|fu zhou|11|27.95|116.36
+上饶|shang rao|11|28.45|117.94
+济南|ji nan|12|36.65|117.12
+青岛|qing dao|12|36.07|120.38
+淄博|zi bo|12|36.81|118.05
+枣庄|zao zhuang|12|34.81|117.32
+东营|dong ying|12|37.43|118.67
+烟台|yan tai|12|37.46|121.45
+潍坊|wei fang|12|36.71|119.16
+济宁|ji ning|12|35.41|116.59
+泰安|tai an|12|36.20|117.09
+威海|wei hai|12|37.51|122.12
+日照|ri zhao|12|35.42|119.53
+临沂|lin yi|12|35.10|118.36
+德州|de zhou|12|37.44|116.36
+聊城|liao cheng|12|36.46|115.99
+滨州|bin zhou|12|37.38|117.97
+菏泽|he ze|12|35.23|115.48
+郑州|zheng zhou|13|34.75|113.65
+开封|kai feng|13|34.80|114.31
+洛阳|luo yang|13|34.62|112.45
+平顶山|ping ding shan|13|33.77|113.19
+安阳|an yang|13|36.10|114.35
+鹤壁|he bi|13|35.75|114.30
+新乡|xin xiang|13|35.30|113.93
+焦作|jiao zuo|13|35.22|113.24
+濮阳|pu yang|13|35.77|115.03
+许昌|xu chang|13|34.04|113.83
+漯河|luo he|13|33.58|114.02
+三门峡|san men xia|13|34.77|111.20
+南阳|nan yang|13|32.99|112.53
+商丘|shang qiu|13|34.41|115.65
+信阳|xin yang|13|32.15|114.09
+周口|zhou kou|13|33.63|114.70
+驻马店|zhu ma dian|13|33.01|114.02
+济源|ji yuan|13|35.07|112.60
+武汉|wu han|14|30.59|114.31
+黄石|huang shi|14|30.20|115.04
+十堰|shi yan|14|32.63|110.80
+宜昌|yi chang|14|30.69|111.29
+襄阳|xiang yang|14|32.01|112.12
+鄂州|e zhou|14|30.39|114.89
+荆门|jing men|14|31.04|112.20
+孝感|xiao gan|14|30.92|113.95
+荆州|jing zhou|14|30.33|112.24
+黄冈|huang gang|14|30.45|114.87
+咸宁|xian ning|14|29.84|114.32
+随州|sui zhou|14|31.69|113.38
+恩施|en shi|14|30.27|109.49
+仙桃|xian tao|14|30.36|113.45
+潜江|qian jiang|14|30.40|112.90
+天门|tian men|14|30.66|113.17
+神农架|shen nong jia|14|31.74|110.68
+长沙|chang sha|15|28.23|112.94
+株洲|zhu zhou|15|27.83|113.13
+湘潭|xiang tan|15|27.83|112.94
+衡阳|heng yang|15|26.89|112.57
+邵阳|shao yang|15|27.24|111.47
+岳阳|yue yang|15|29.36|113.13
+常德|chang de|15|29.03|111.70
+张家界|zhang jia jie|15|29.12|110.48
+益阳|yi yang|15|28.55|112.36
+郴州|chen zhou|15|25.77|113.02
+永州|yong zhou|15|26.42|111.61
+怀化|huai hua|15|27.55|110.00
+娄底|lou di|15|27.70|111.99
+湘西|xiang xi|15|28.31|109.74
+广州|guang zhou|16|23.13|113.26
+韶关|shao guan|16|24.80|113.60
+深圳|shen zhen|16|22.54|114.06
+珠海|zhu hai|16|22.27|113.58
+汕头|shan tou|16|23.35|116.68
+佛山|fo shan|16|23.02|113.12
+江门|jiang men|16|22.58|113.08
+湛江|zhan jiang|16|21.27|110.36
+茂名|mao ming|16|21.66|110.93
+肇庆|zhao qing|16|23.05|112.47
+惠州|hui zhou|16|23.11|114.42
+梅州|mei zhou|16|24.29|116.12
+汕尾|shan wei|16|22.79|115.36
+河源|he yuan|16|23.74|114.70
+阳江|yang jiang|16|21.86|111.98
+清远|qing yuan|16|23.68|113.06
+东莞|dong guan|16|23.02|113.75
+中山|zhong shan|16|22.52|113.39
+潮州|chao zhou|16|23.66|116.62
+揭阳|jie yang|16|23.55|116.37
+云浮|yun fu|16|22.94|112.04
+南宁|nan ning|17|22.82|108.37
+柳州|liu zhou|17|24.31|109.41
+桂林|gui lin|17|25.27|110.29
+梧州|wu zhou|17|23.48|111.28
+北海|bei hai|17|21.48|109.12
+防城港|fang cheng gang|17|21.69|108.35
+钦州|qin zhou|17|21.98|108.65
+贵港|gui gang|17|23.11|109.60
+玉林|yu lin|17|22.64|110.16
+百色|bai se|17|23.90|106.62
+贺州|he zhou|17|24.40|111.57
+河池|he chi|17|24.69|108.09
+来宾|lai bin|17|23.75|109.23
+崇左|chong zuo|17|22.40|107.36
+海口|hai kou|18|20.04|110.20
+三亚|san ya|18|18.25|109.51
+三沙|san sha|18|16.83|112.33
+儋州|dan zhou|18|19.52|109.58
+成都|cheng du|19|30.67|104.07
+自贡|zi gong|19|29.34|104.78
+攀枝花|pan zhi hua|19|26.58|101.72
+泸州|lu zhou|19|28.87|105.44
+德阳|de yang|19|31.13|104.40
+绵阳|mian yang|19|31.47|104.73
+广元|guang yuan|19|32.44|105.84
+遂宁|sui ning|19|30.51|105.57
+内江|nei jiang|19|29.58|105.07
+乐山|le shan|19|29.55|103.77
+南充|nan chong|19|30.80|106.08
+眉山|mei shan|19|30.08|103.85
+宜宾|yi bin|19|28.76|104.64
+广安|guang an|19|30.46|106.63
+达州|da zhou|19|31.21|107.50
+雅安|ya an|19|30.01|103.04
+巴中|ba zhong|19|31.87|106.75
+资阳|zi yang|19|30.13|104.64
+阿坝|a ba|19|31.90|102.22
+甘孜|gan zi|19|30.05|101.96
+凉山|liang shan|19|27.88|102.27
+贵阳|gui yang|20|26.65|106.63
+六盘水|liu pan shui|20|26.59|104.83
+遵义|zun yi|20|27.73|106.93
+安顺|an shun|20|26.25|105.95
+毕节|bi jie|20|27.30|105.29
+铜仁|tong ren|20|27.73|109.19
+黔西南|qian xi nan|20|25.09|104.90
+黔东南|qian dong nan|20|26.58|107.98
+黔南|qian nan|20|26.25|107.52
+昆明|kun ming|21|25.04|102.71
+曲靖|qu jing|21|25.49|103.80
+玉溪|yu xi|21|24.35|102.54
+保山|bao shan|21|25.11|99.16
+昭通|zhao tong|21|27.34|103.72
+丽江|li jiang|21|26.86|100.23
+普洱|pu er|21|22.83|100.97
+临沧|lin cang|21|23.88|100.09
+楚雄|chu xiong|21|25.05|101.55
+红河|hong he|21|23.36|103.38
+文山|wen shan|21|23.37|104.24
+西双版纳|xi shuang ban na|21|22.01|100.80
+大理|da li|21|25.61|100.27
+德宏|de hong|21|24.43|98.59
+怒江|nu jiang|21|25.82|98.86
+迪庆|di qing|21|27.82|99.71
+拉萨|la sa|22|29.65|91.12
+日喀则|ri ka ze|22|29.27|88.88
+昌都|chang du|22|31.14|97.18
+林芝|lin zhi|22|29.65|94.36
+山南|shan nan|22|29.24|91.77
+那曲|na qu|22|31.48|92.05
+阿里|a li|22|32.50|80.11
+西安|xi an|23|34.34|108.94
+铜川|tong chuan|23|34.90|108.95
+宝鸡|bao ji|23|34.36|107.24
+咸阳|xian yang|23|34.33|108.71
+渭南|wei nan|23|34.50|109.51
+延安|yan an|23|36.59|109.49
+汉中|han zhong|23|33.07|107.02
+榆林|yu lin|23|38.29|109.73
+安康|an kang|23|32.68|109.03
+商洛|shang luo|23|33.87|109.94
+兰州|lan zhou|24|36.06|103.83
+嘉峪关|jia yu guan|24|39.77|98.29
+金昌|jin chang|24|38.52|102.19
+白银|bai yin|24|36.54|104.17
+天水|tian shui|24|34.58|105.72
+武威|wu wei|24|37.93|102.63
+张掖|zhang ye|24|38.93|100.45
+平凉|ping liang|24|35.54|106.68
+酒泉|jiu quan|24|39.74|98.49
+庆阳|qing yang|24|35.71|107.64
+定西|ding xi|24|35.58|104.63
+陇南|long nan|24|33.40|104.92
+临夏|lin xia|24|35.60|103.21
+甘南|gan nan|24|34.98|102.91
+西宁|xi ning|25|36.62|101.78
+海东|hai dong|25|36.50|102.10
+海北|hai bei|25|36.95|100.90
+黄南|huang nan|25|35.52|102.02
+海南州|hai nan zhou|25|36.28|100.62
+果洛|guo luo|25|34.47|100.24
+玉树|yu shu|25|33.00|97.01
+海西|hai xi|25|37.38|97.37
+银川|yin chuan|26|38.49|106.23
+石嘴山|shi zui shan|26|39.01|106.38
+吴忠|wu zhong|26|37.99|106.20
+固原|gu yuan|26|36.02|106.24
+中卫|zhong wei|26|37.51|105.19
+乌鲁木齐|wu lu mu qi|27|43.83|87.62
+克拉玛依|ke la ma yi|27|45.58|84.89
+吐鲁番|tu lu fan|27|42.95|89.19
+哈密|ha mi|27|42.83|93.51
+昌吉|chang ji|27|44.01|87.31
+博尔塔拉|bo er ta la|27|44.91|82.07
+巴音郭楞|ba yin guo leng|27|41.76|86.15
+阿克苏|a ke su|27|41.17|80.26
+克孜勒苏|ke zi le su|27|39.71|76.17
+喀什|ka shi|27|39.47|75.99
+和田|he tian|27|37.11|79.92
+伊犁|yi li|27|43.92|81.32
+塔城|ta cheng|27|46.75|82.99
+阿勒泰|a lei tai|27|47.85|88.14
+石河子|shi he zi|27|44.31|86.04
+阿拉尔|a la er|27|40.54|81.29
+图木舒克|tu mu shu ke|27|39.87|79.07
+五家渠|wu jia qu|27|44.17|87.54
+香港|xiang gang|28|22.32|114.17
+澳门|ao men|28|22.20|113.54
+台北|tai bei|28|25.03|121.57
+新北|xin bei|28|25.01|121.47
+桃园|tao yuan|28|24.99|121.31
+台中|tai zhong|28|24.15|120.67
+台南|tai nan|28|22.99|120.21
+高雄|gao xiong|28|22.63|120.30`;
+const CITY_LIST = CITY_RAW.trim().split(/\r?\n/).map(l => {
+  const [name, py, prov, lat, lon] = l.split('|');
+  return { name: name.trim(), py: py.trim(), prov: +prov, lat: +lat, lon: +lon };
+});
+const pyCat = s => String(s || '').toLowerCase().replace(/ /g, '');
+const pyAbbr = py => String(py || '').split(' ').map(w => w[0] || '').join('');
+const pyMatch = (c, q) => {
+  const qn = pyCat(q);
+  if (!qn) return true;
+  return pyCat(c.py).startsWith(qn) || pyAbbr(c.py).startsWith(qn);
+};
+const cityByName = n => CITY_LIST.find(c => c.name === n);
+const cityListItems = () => {
+  const m = S.modal || {};
+  const filter = m.cityFilter || '';
+  const prov = m.cityProv === undefined ? -1 : m.cityProv;
+  if (filter) return CITY_LIST.filter(c => pyMatch(c, filter)).map(c => ({ kind:'city', city:c, name:c.name, sub: PROV_NAMES[c.prov] }));
+  if (prov >= 0) return CITY_LIST.filter(c => c.prov === prov).map(c => ({ kind:'city', city:c, name:c.name, sub:'' }));
+  const hot = HOT_NAMES.map(n => cityByName(n)).filter(Boolean);
+  return [
+    { kind:'auto', name:'自动定位', sub: S.cityMode !== 'pin' ? '按公网 IP · 已开' : '按公网 IP · 点此打开' },
+    ...hot.map(c => ({ kind:'hot', city:c, name:c.name, sub:'热门' })),
+    ...PROV_NAMES.map((p, i) => ({ kind:'prov', prov:i, name:p, sub:'省份' })),
+  ];
+};
+const pinCity = c => {
+  S.city = { name: c.name, lat: c.lat, lon: c.lon };
+  S.cityMode = 'pin';
+  S.modal = null;
+  WX.city = c.name;
+  toast('已钉死 ' + c.name);
+  if (S.net === 'online') refreshT = .5;
+  syncCitySel();
+};
+const goAutoLocate = () => {
+  S.cityMode = 'auto';
+  S.modal = null;
+  syncCitySel();
+  if (S.net !== 'online') { toast('已改回自动 · 连上网后再定位'); return; }
+  toast('定位到 ' + S.city.name);
+  refreshT = .5;
+};
+const syncCitySel = () => {
+  const el = document.getElementById('citysel');
+  if (!el || !el.options) return;
+  const names = [...HOT_NAMES];
+  if (S.city.name && names.indexOf(S.city.name) < 0) names.push(S.city.name);
+  el.innerHTML = '<option value="auto">城市:自动定位</option>' +
+    names.map(n => '<option value="' + n + '">城市:' + n + '</option>').join('');
+  el.value = S.cityMode === 'auto' ? 'auto' : (S.city.name || 'auto');
 };
 const makeDemoWeather = () => {
   const wm = [0,1,2,2,3,61,80];
@@ -1362,6 +1786,7 @@ const netBadge = () => {
 /* ---- 音乐演示数据(真机来自 BLE: META|LRC|SPEC) ---- */
 const song = { title:'夜曲', artist:'周杰伦 · 十一月的萧邦', dur:227,
   lrc:['蝴蝶自在飞 像那破碎的过往','为你弹奏萧邦的夜曲','纪念我死去的爱情','而我为你隐姓埋名','在月光下弹琴'] };
+let musicLrcKey = '', musicLrcStart = 0;
 let specPhase = 0;
 const tickSpec = dt => {
   specPhase += dt;
@@ -1420,9 +1845,8 @@ const statusBar = (t, right, light) => {
   if (!light) divider(0, 18, W, RGB.LINE);
 };
 
-/* 全页统一页脚:一条像素草地带 —— 把五个页面绑成一台设备的视觉签名。
-   时钟页自己有完整场景(草地是场景的一部分,皮卡丘也只在那一页跑),
-   其余四页画这条,只做风格统一,不放皮卡丘。 */
+/* 全页统一页脚:一条像素草地带。时钟页草地是场景的一部分会跟着跑,
+   其余四页这条是静止装饰,不放皮卡丘。 */
 const FOOT_H = 26;                       /* 页脚高度 */
 const FOOT_Y = H - FOOT_H;               /* 214 */
 const pageFooter = () => {
@@ -1432,8 +1856,7 @@ const pageFooter = () => {
     hline(0, FOOT_Y + i, W, lerp(RGB.BG, 0x8FC45E, i/7 * .5));
   rect(0, gy, W, FOOT_H - 8, dim(0x7CB44E, 1));
   hline(0, gy, W, dim(0x9AD066, 1));
-  /* 草丛(和时钟页同一套视差滚动,所以整机的地面是同一片) */
-  for (const t of TUFTS) {
+  for (const t of FOOT_TUFTS) {
     const tc = dim(0x5E9C3A, 1);
     rect(t.x, gy + 2 + (t.x % 4), 2, t.h * 2, tc);
     rect(t.x + 2, gy + 1 + (t.x % 3), 2, t.h * 2 + 1, tc);
@@ -1665,7 +2088,7 @@ const roundBtn = (id, cx, cy, r, k, primary) => {
   }
 };
 
-/* ---- 封面:虚线圆环(参考稿右侧)+ 圆盘里跑同一只像素皮卡丘,随播放旋转 ---- */
+/* ---- 封面:浅黄唱盘 + 音符。皮卡丘只出现在时钟页 ---- */
 const coverDisc = (cx, cy, r, spin, dashRing = true) => {
   /* 虚线环:短弧段沿圆周排,自转;黄红交替呼应主色。
      频谱走「封面环形」时让位给频谱射线,不画虚线环。 */
@@ -1674,15 +2097,13 @@ const coverDisc = (cx, cy, r, spin, dashRing = true) => {
     const a0 = i * 360/seg + spin;
     arc(cx, cy, r + 7, r + 3, a0, a0 + 360/seg * .6, i % 2 ? TH.ACCENT : TH.RED_DK, false);
   }
-  /* 盘面:浅黄底 */
   g.beginPath(); g.arc(cx, cy, r, 0, 6.284);
   g.fillStyle = TH.GOLD_DK; g.fill();
-  /* 里面装皮卡丘的头(按 r10 眼鼻行对中裁圆),和时钟页同一份点阵 */
-  g.save();
-  g.beginPath(); g.arc(cx, cy, r - 1, 0, 6.284); g.clip();
-  const hs = 3;                                  /* 头像放大 3× */
-  drawSprite(PK_BODY, cx - 15*hs, cy - 9*hs, hs);
-  g.restore();
+  g.strokeStyle = dim(RGB.ACCENT, .55); g.lineWidth = 1;
+  g.beginPath(); g.arc(cx, cy, r * .72, 0, 6.284); g.stroke();
+  g.beginPath(); g.arc(cx, cy, r * .38, 0, 6.284);
+  g.fillStyle = TH.ACCENT; g.fill();
+  glyph('note', cx - r * .36, cy - r * .36, r * .72, TH.TXT_HI);
   g.strokeStyle = TH.ACCENT; g.lineWidth = 1;
   g.beginPath(); g.arc(cx, cy, r - .5, 0, 6.284); g.stroke();
 };
@@ -1763,8 +2184,14 @@ function pageMusic() {
   txtClip(song.title, MU.txtX, 62, MU.txtW, TH.TXT_HI, '600 17px ' + CJK);
   txtClip(song.artist, MU.txtX, 80, MU.txtW, TH.TXT_MID, FONT.CN10);
   const li = Math.floor(pos / 6) % song.lrc.length;
+  const currentLrc = song.lrc[li];
+  if (currentLrc !== musicLrcKey) {
+    musicLrcKey = currentLrc;
+    musicLrcStart = sceneClock;
+  }
   divider(MU.txtX, 92, MU.txtW, RGB.RIM);
-  txtClip(song.lrc[li], MU.txtX, 112, MU.txtW, TH.RED, FONT.CN12);
+  txtMarquee(currentLrc, MU.txtX, 112, MU.txtW, TH.RED, FONT.CN12,
+             sceneClock - musicLrcStart);
   txtClip(song.lrc[(li+1) % song.lrc.length], MU.txtX, 128, MU.txtW, TH.TXT_LO, FONT.CN10);
   txtClip(song.lrc[(li+2) % song.lrc.length], MU.txtX, 143, MU.txtW, TH.TXT_LO, FONT.CN10);
 
@@ -1893,6 +2320,8 @@ const BT_TXT = { con:['已连接 ' + S.btDev, 'GREEN'], adv:['广播中·等连�
 const settingRows = () => [
   { k:'WiFi',  v: S.net === 'online' ? S.wifiSsid : S.net === 'offline' ? `离线 · ${S.wifiSsid}` : '未配置,点此扫描',
     c: S.net === 'online' ? TH.GREEN : S.net === 'offline' ? TH.AMBER : TH.RED, act:'wifi', arrow:true },
+  { k:'城市',  v: S.cityMode === 'pin' ? S.city.name : `${S.city.name} · 自动`,
+    c: TH.ACCENT, act:'city', arrow:true },
   { k:'蓝牙',  v: S.bt ? S.btDev : BT_TXT[S.btState][0],
     c: TH[BT_TXT[S.btState][1]], act:'bt', arrow:true },
   { k:'亮度',  v:`${S.bright}%`, bar:S.bright/100, c:TH.AMBER, act:'bright' },
@@ -1945,7 +2374,7 @@ function pageSettings() {
   dots(W/2, 234, 4, true);
 }
 /* =====================================================================
-   11. 弹窗 —— WiFi 配网全流程 / 蓝牙 / 重置
+   11. 弹窗 —— WiFi 配网 / 城市(热门+省份+拼音) / 蓝牙 / 重置
    ===================================================================== */
 const NETS = [   /* 模拟扫描结果(真机 WiFi.scan()) */
   { ssid:'Pika-Home',     sig:3, lock:false },
@@ -1960,7 +2389,8 @@ const KB_UPPER = ['QWERTYUIOP','ASDFGHJKL','ZXCVBNM'];
 const KB_NUM   = ['1234567890','-/:;()@&"',".?!'"];
 
 const openModal = kind => {
-  S.modal = { kind, sel: 0, ssid: '', pass: '', kbShift: false, kbNum: false, connT: 0 };
+  S.modal = { kind, sel: 0, ssid: '', pass: '', kbShift: false, kbNum: false, connT: 0,
+    cityProv: -1, citySel: 0, cityFilter: '', kbWhy: 0 };
 };
 const MODAL_BTN_H = 30;
 
@@ -2011,9 +2441,10 @@ function drawModal() {
     ]);
 
   } else if (m.kind === 'kb') {
-    /* 密码键盘:显示行 + 3 排键 + 底部功能行 */
-    modalFrame(6, 14, 308, 212, `输入密码 · ${m.ssid}`);
-    /* 密码行 */
+    /* 密码键盘 / 城市拼音搜索:显示行 + 3 排键 + 底部功能行 */
+    const cityKb = m.kbWhy === 1;
+    modalFrame(6, 14, 308, 212, cityKb ? '城市拼音 · 如 sz / suzhou' : `输入密码 · ${m.ssid}`);
+    /* 输入行 */
     card(14, 30, 292, 24, 6, TH.CARD, TH.ACCENT);
     const blink = (sceneClock * 2 % 1) < .5 ? '▎' : ' ';
     txtClip(m.pass + blink, 22, 47, 260, TH.TXT_HI, FONT.NUM14);
@@ -2040,7 +2471,7 @@ function drawModal() {
       { id:'k.shift',  label:m.kbShift ? '小写' : '大写', w:52, c:m.kbShift ? RGB.RED : RGB.ACCENT },
       { id:'k.num',    label:m.kbNum ? 'ABC' : '123',  w:52, c:m.kbNum ? RGB.RED : RGB.ACCENT },
       { id:'k.bs',     label:'⌫ 退格', w:64, c:RGB.AMBER },
-      { id:'k.ok',     label:'连接',   w:64, c:RGB.RED },
+      { id:'k.ok',     label: cityKb ? '搜索' : '连接',   w:64, c:RGB.RED },
     ];
     let fx = 12;
     seg.forEach(b => {
@@ -2051,15 +2482,15 @@ function drawModal() {
       txt(b.label, fx + b.w/2, fy + 17, down ? TH.TXT_HI : toCss(b.c), FONT.CN12, 'center');
       fx += b.w + 6;
     });
-    txt(`密码至少 8 位 · 已输入 ${m.pass.length}`, W/2, 196, TH.TXT_LO, FONT.CN10, 'center');
-    txt('电脑键盘直接敲字也行', W/2, 210, TH.TXT_LO, FONT.CN10, 'center');
+    txt(cityKb ? `拼音全拼或首字母 · 已输入 ${m.pass.length}` : `密码至少 8 位 · 已输入 ${m.pass.length}`, W/2, 196, TH.TXT_LO, FONT.CN10, 'center');
+    txt(cityKb ? '电脑键盘直接敲字也行' : '电脑键盘直接敲字也行', W/2, 210, TH.TXT_LO, FONT.CN10, 'center');
 
   } else if (m.kind === 'connecting') {
     modalFrame(60, 66, 200, 108, '正在连接');
     const a = sceneClock * 360 % 360;
     arc(W/2, 108, 16, 11, a, a + 130, TH.ACCENT, true);
     txt(m.ssid, W/2, 138, TH.TXT, FONT.CN16, 'center');
-    txt('获取天气数据中…', W/2, 154, TH.TXT_MID, FONT.CN12, 'center');
+    txt('连上后自动定位并拉天气', W/2, 154, TH.TXT_MID, FONT.CN12, 'center');
 
   } else if (m.kind === 'bt') {
     modalFrame(18, 34, 284, 172, '蓝牙');
@@ -2079,13 +2510,45 @@ function drawModal() {
     const isReset = m.kind === 'reset';
     modalFrame(26, 56, 268, 128, isReset ? '恢复默认设置' : '重启设备', RGB.AMBER);
     if (isReset) {
-      txt('会清掉:亮度、样式、WiFi 配置。', 40, 104, TH.TXT, FONT.CN12);
+      txt('会清掉:亮度、样式、WiFi、城市定位。', 40, 104, TH.TXT, FONT.CN12);
       txt('清完回到时钟页。', 40, 122, TH.TXT_MID, FONT.CN12);
     } else {
       txt('设置会保留,大约 3 秒后回到时钟页。', 40, 112, TH.TXT, FONT.CN12);
     }
     modalBtns(40, 144, 240, [{ id:'cancel', label:'取消', c:RGB.TXT_MID },
       { id: isReset ? 'reset.go' : 'reboot.go', label: isReset ? '确认清除' : '确认重启', c:RGB.RED }]);
+
+  } else if (m.kind === 'city') {
+    const items = cityListItems();
+    let title = '选择城市';
+    if (m.cityFilter) title = '搜索城市';
+    else if (m.cityProv >= 0) title = PROV_NAMES[m.cityProv];
+    modalFrame(14, 20, 292, 200, title);
+    const VIS = 6, n = items.length;
+    m.citySel = n ? ((m.citySel % n) + n) % n : 0;
+    let lo = m.citySel - VIS + 1;
+    if (lo < 0) lo = 0;
+    if (lo > n - VIS) lo = n > VIS ? n - VIS : 0;
+    if (n <= 0) txt('没有匹配', W/2, 110, TH.TXT_MID, FONT.CN16, 'center');
+    for (let i = lo; i < n && i < lo + VIS; i++) {
+      const it = items[i], y = 36 + (i - lo) * 24;
+      hit('c.it.' + i, 22, y, 276, 22);
+      const down = S.press === 'c.it.' + i, sel = i === m.citySel;
+      if (down) cardGrad(22, y, 276, 22, 5, mixHex(RGB.CARD_HI, RGB.ACCENT, .3), RGB.CARD_HI, RGB.ACCENT);
+      else if (sel) cardGrad(22, y, 276, 22, 5, RGB.GOLD_DK, RGB.CARD, RGB.ACCENT);
+      else card(22, y, 276, 22, 5, TH.CARD, TH.LINE);
+      const here = (it.kind === 'city' || it.kind === 'hot') && it.name === S.city.name;
+      const autoOn = it.kind === 'auto' && S.cityMode !== 'pin';
+      if (here || autoOn) dot(28, y + 11, 2.5, TH.GREEN);
+      txtClip(it.name, (here || autoOn) ? 36 : 30, y + 16, 150, TH.TXT, FONT.CN12);
+      if (it.sub) txt(it.sub, 290, y + 16, TH.TXT_LO, FONT.CN12, 'right');
+      else if (it.kind === 'prov') txt('>', 290, y + 16, TH.TXT_LO, FONT.CN12, 'right');
+    }
+    textBtn('c.search', 30, 186, 126, 30, '拼音搜索', RGB.ACCENT, false);
+    if (m.cityFilter || m.cityProv >= 0)
+      textBtn('c.back', 164, 186, 126, 30, '返回', RGB.TXT_MID, false);
+    else
+      textBtn('c.cancel', 164, 186, 126, 30, '取消', RGB.TXT_MID, false);
   }
 }
 
@@ -2095,10 +2558,16 @@ const connectDone = () => {
   if (!m) return;
   S.net = 'online';
   S.wifiSsid = m.ssid;
-  refreshT = .5;                       /* 连上马上拉一次天气 */
+  refreshT = .5;
   S.modal = null;
-  toast(`已连接 ${m.ssid}`);
-  syncRig(); syncNetInfo(); syncNetSeg();
+  /* 预览没法打真机那条 HTTP ip-api,自动模式就用当前城市模拟定位 */
+  if (S.cityMode !== 'pin') {
+    toast('已连接,正在定位并拉天气');
+    toast('定位到 ' + S.city.name);
+  } else {
+    toast('已连接 ' + m.ssid);
+  }
+  syncRig(); syncNetInfo(); syncNetSeg(); syncCitySel();
 };
 /* =====================================================================
    12. 主循环 —— 翻页动画 / 模态计时 / toast
@@ -2156,10 +2625,12 @@ const loop = t => {
     }
     /* 步频跟地面滚动速度挂钩:地面走 22px = 一个 4 帧步态循环,脚不打滑 */
     S.pkFrame = Math.floor(sceneClock * PK_SPD / 22 * 4) % 4;
-    /* 草丛向左滚:皮卡丘原地跑,是地面在动 */
-    for (const t of TUFTS) {
-      t.x -= PK_SPD * dt;
-      if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng() * 2); }
+    /* 草丛向左滚:只在时钟页,皮卡丘原地跑是地面在动 */
+    if (S.page === 0) {
+      for (const t of TUFTS) {
+        t.x -= PK_SPD * dt;
+        if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng() * 2); }
+      }
     }
     if (S.pkJump !== null) { S.pkJump += dt / .55; if (S.pkJump >= 1) S.pkJump = null; }
     tickAutoPage(dt);
@@ -2202,6 +2673,11 @@ const tickAutoPage = dt => {
 const goVert = dir => {
   const p = PAGES[S.page];
   if (S.modal) {
+    if (S.modal.kind === 'city') {
+      const n = cityListItems().length;
+      if (n > 0) S.modal.citySel = (S.modal.citySel + dir + n) % n;
+      return;
+    }
     const n = HITS.filter(t => t.focus).length || 1;
     S.modal.sel = (S.modal.sel + dir + n) % n;
     return;
@@ -2248,6 +2724,7 @@ const doAct = id => {
     return;
   }
   if (id === 'act.wifi')  { openModal('wifi'); return; }
+  if (id === 'act.city')  { openModal('city'); return; }
   if (id === 'act.bt')    { openModal('bt'); return; }
   if (id === 'act.bright') {
     S.bright = S.bright >= 100 ? 10 : Math.min(100, S.bright + 15);
@@ -2261,14 +2738,16 @@ const doAct = id => {
   if (id.startsWith('w.net.')) {
     const n = NETS[+id.slice(6)];
     if (!n) return;
-    if (n.lock) { S.modal = { ...S.modal, kind:'kb', ssid:n.ssid, pass:'', kbShift:false, kbNum:false }; }
+    if (n.lock) { S.modal = { ...S.modal, kind:'kb', kbWhy:0, ssid:n.ssid, pass:'', kbShift:false, kbNum:false }; }
     else { S.modal = { ...S.modal, kind:'connecting', ssid:n.ssid, connT:1.4 }; }
     return;
   }
   if (id === 'w.refresh') { toast('已重新扫描'); return; }
   if (id === 'w.cancel')  { S.modal = null; return; }
   /* --- 密码键盘 --- */
+  if (!S.modal && id.startsWith('k.')) return;
   if (id.startsWith('k.k.')) {
+    if (!S.modal) return;
     const [r, c] = id.slice(4).split(':').map(Number);
     const rows = S.modal.kbNum ? KB_NUM : (S.modal.kbShift ? KB_UPPER : KB_LOWER);
     const ch = (rows[r] || '')[c];
@@ -2278,14 +2757,55 @@ const doAct = id => {
   if (id === 'k.shift') { S.modal.kbShift = !S.modal.kbShift; return; }
   if (id === 'k.num')   { S.modal.kbNum = !S.modal.kbNum; return; }
   if (id === 'k.bs')    { S.modal.pass = S.modal.pass.slice(0, -1); return; }
-  if (id === 'k.cancel'){ S.modal = { ...S.modal, kind:'wifi' }; return; }
+  if (id === 'k.cancel'){
+    if (S.modal.kbWhy === 1) { S.modal = { ...S.modal, kind:'city' }; return; }
+    S.modal = { ...S.modal, kind:'wifi' }; return;
+  }
   if (id === 'k.ok') {
+    if (S.modal.kbWhy === 1) {
+      S.modal = { ...S.modal, kind:'city', cityFilter: (S.modal.pass || '').slice(0, 16), cityProv: -1, citySel: 0 };
+      return;
+    }
     if (S.modal.pass.length < 8) { toast('密码至少 8 位'); return; }
     S.modal = { ...S.modal, kind:'connecting', connT:1.4 };
     return;
   }
+  /* --- 城市弹窗 --- */
+  if (id.startsWith('c.it.')) {
+    if (!S.modal || S.modal.kind !== 'city') return;
+    const idx = +id.slice(5);
+    const items = cityListItems();
+    const it = items[idx];
+    if (!it) return;
+    S.modal.citySel = idx;
+    if (it.kind === 'auto') { goAutoLocate(); return; }
+    if (it.kind === 'prov') {
+      S.modal.cityProv = it.prov;
+      S.modal.cityFilter = '';
+      S.modal.citySel = 0;
+      return;
+    }
+    if (it.city) pinCity(it.city);
+    return;
+  }
+  if (id === 'c.search') {
+    if (!S.modal || S.modal.kind !== 'city') { openModal('city'); }
+    S.modal = { ...S.modal, kind:'kb', kbWhy:1, ssid:'', pass: S.modal.cityFilter || '', kbShift:false, kbNum:false };
+    return;
+  }
+  if (id === 'c.back') {
+    if (!S.modal || S.modal.kind !== 'city') return;
+    if (S.modal.cityFilter) S.modal.cityFilter = '';
+    else S.modal.cityProv = -1;
+    S.modal.citySel = 0;
+    return;
+  }
+  if (id === 'c.cancel') { S.modal = null; return; }
   /* --- 弹窗通用/蓝牙 --- */
-  if (id === 'x.dismiss' || id === 'x.cancel') { S.modal = null; return; }
+  if (id === 'x.dismiss' || id === 'x.cancel') {
+    if (S.modal && (S.modal.kind === 'wifi' || S.modal.kind === 'connecting' || S.modal.kind === 'city')) return;
+    S.modal = null; return;
+  }
   if (id === 'x.card') return;
   if (id === 'x.bt.disc')   { setBt('adv'); S.modal = null; toast('已断开'); return; }
   if (id === 'x.bt.forget') { setBt('adv'); S.modal = null; toast('已忘记设备'); return; }
@@ -2295,7 +2815,11 @@ const doAct = id => {
   if (id === 'x.reset.go') {
     S.bright = 72; S.autoPage = true; S.playing = true;
     S.vsel = PAGES.map(() => 0); S.setSel = 0; S.setScroll = 0; S.monthOff = 0;
+    S.wifiSsid = ''; S.net = 'unconfig';
+    S.city = { name:'苏州', lat:31.30, lon:120.58 }; S.cityMode = 'auto';
+    WX.city = '苏州';
     setBt('con'); S.modal = null; setPage(0, -1); toast('已恢复默认');
+    syncNetSeg(); syncNetInfo(); syncCitySel();
     return;
   }
   if (id === 'x.reboot.go') { S.modal = null; setPage(0, -1); toast('重启中…'); return; }
@@ -2321,7 +2845,16 @@ addEventListener('keydown', e => {
   if (k === 'ArrowRight') { if (!S.modal) goPage(1);  e.preventDefault(); }
   if (k === 'ArrowUp')    { goVert(-1); e.preventDefault(); }
   if (k === 'ArrowDown')  { goVert(1);  e.preventDefault(); }
-  if (k === 'Escape')     { S.modal = null; e.preventDefault(); }
+  if (k === 'Escape') {
+    if (S.modal && S.modal.kind === 'kb' && S.modal.kbWhy === 1) {
+      S.modal = { ...S.modal, kind:'city' };
+    } else if (S.modal && (S.modal.kind === 'wifi' || S.modal.kind === 'connecting' || S.modal.kind === 'city')) {
+      /* 配网/选城市点空白不关,和固件一致 */
+    } else {
+      S.modal = null;
+    }
+    e.preventDefault();
+  }
   if (k === 'Enter') {
     e.preventDefault();
     if (S.modal) {
@@ -2368,7 +2901,10 @@ cv.addEventListener('pointerup', e => {
     return;
   }
   if (ms > 900) return;
-  if (S.modal) return;
+  if (S.modal) {
+    if (S.modal.kind === 'city' && ay >= 45 && ay > ax * 1.6) goVert(dy < 0 ? 1 : -1);
+    return;
+  }
   if (ax >= 45 && ax > ay * 1.6) {
     goPage(dx < 0 ? 1 : -1);                 /* 左滑 = 下一页 */
   } else if (ay >= 45 && ay > ax * 1.6) goVert(dy < 0 ? 1 : -1);
@@ -2427,7 +2963,12 @@ const syncNetSeg = () => {
 const setNet = n => {
   S.net = n;
   if (n === 'unconfig') { S.wifiSsid = ''; toast('已清掉配网,走演示数据'); }
-  if (n === 'online')   { if (!S.wifiSsid) S.wifiSsid = 'Pika-Home'; refreshT = .5; toast('已联网'); }
+  if (n === 'online') {
+    if (!S.wifiSsid) S.wifiSsid = 'Pika-Home';
+    refreshT = .5;
+    if (S.cityMode !== 'pin') toast('定位到 ' + S.city.name);
+    else toast('已联网');
+  }
   if (n === 'offline')  toast('WiFi 断了,继续用缓存');
   syncNetSeg(); syncRig(); syncNetInfo();
 };
@@ -2441,11 +2982,10 @@ document.getElementById('srcsel').addEventListener('change', e => {
   toast(S.netSource === 'api' ? '切换到在线 API' : '切换到演示数据');
 });
 document.getElementById('citysel').addEventListener('change', e => {
-  const [lat, lon] = e.target.value.split(',').map(Number);
-  const name = e.target.selectedOptions[0].textContent.replace('城市:', '');
-  S.city = { name, lat, lon };
-  toast(`城市:${name}`);
-  if (S.net === 'online') refreshT = .5;
+  const v = e.target.value;
+  if (v === 'auto') { goAutoLocate(); return; }
+  const c = cityByName(v);
+  if (c) pinCity(c);
 });
 document.getElementById('refetch').addEventListener('click', () => forceRefresh());
 
@@ -2509,6 +3049,7 @@ syncRig();
 syncAutoInfo();
 syncNetSeg();
 syncNetInfo();
+syncCitySel();
 shell.classList.add('glowing');
 /* 等字体到位再开画,否则首帧宽度量错 */
 (document.fonts ? document.fonts.ready : Promise.resolve())

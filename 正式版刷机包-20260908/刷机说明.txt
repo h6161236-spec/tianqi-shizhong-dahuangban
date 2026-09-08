@@ -1,0 +1,23 @@
+正式版刷机包 - 2026-09-08
+
+本包包含正式版，不含演示版。固件编译与主机回归测试通过，尚需真机验证。
+修复范围：颜色异常、时钟滑动、播放/暂停指令、歌词切换刷新及时钟局部刷新。
+
+使用方式：
+1. 先完整解压 ZIP，插上开发板 USB 数据线。
+2. 双击本目录 flash.cmd，等待烧录完成。
+3. 默认保留 WiFi 和设置，不执行整片擦除。
+
+如需指定串口，在本目录的 PowerShell 中执行：
+powershell -ExecutionPolicy Bypass -File .\flash.ps1 -Port COM3
+将 COM3 换成实际串口。
+
+脚本优先使用本机 PlatformIO 自带的 esptool；未安装时会提示。
+
+手动烧录偏移（不要把这三个文件当成单个合并镜像）：
+final/bootloader.bin  0x1000
+final/partitions.bin  0x8000
+final/firmware.bin    0x10000
+
+firmware.bin 大小：1753920 bytes
+SHA256：AAB3EEC0FE464F808B737C710479EFD6192A3E8E3059FE97EBEA0FF4F589E046

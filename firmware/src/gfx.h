@@ -5,12 +5,13 @@
  * =====================================================================
  *  (自参考工程 E:\xiangmu\开发板 移植,Sprite 策略与抗锯齿封装原样保留)
  *
- *  1) Sprite 策略 —— 三块固定条带,开机一次性分配(WiFi/BLE 起来之前堆
- *     还是整块的),全程复用,共 53KB:
+ *  1) Sprite 策略 —— 四块固定缓冲,开机一次性分配(WiFi/BLE 起来之前堆
+ *     还是整块的),全程复用,约 87KB:
+ *       disc  128×132  音乐圆盘+音波 / 时钟页云与皮卡丘合成
  *       big   240×68   大号时间数字 / 弹窗
- *       strip 320×28   标题 / 歌词 / 状态行 + 跑马灯
+ *       strip 320×28   标题 / 歌词 / 状态行 + 跑马灯 / 时钟草带
  *       bar    20×64   频谱单根柱子
- *     时钟页的天空场景不整屏开 Sprite(150KB 开不起),按 2px 横带直接画屏。
+ *     时钟页天空仍按 2px 横带直接画屏(整屏 Sprite 150KB 开不起)。
  *
  *  2) 抗锯齿图元强制带 bg 参数(TFT_eSPI 2.5.x 的约定,传错会出脏边)。
  *
@@ -31,8 +32,8 @@ constexpr int GFX_STRIP_W = SCR_W;   // 320,整屏宽,跑马灯直接靠边界�
 constexpr int GFX_STRIP_H = 28;
 constexpr int GFX_BAR_W = 20;       // 18px 柱 + 2px 柱间距
 constexpr int GFX_BAR_H = 64;       // 频谱最大高度;每柱整块覆盖,缩短无残影
-constexpr int GFX_DISC_W = 128;     // 音乐页圆盘+环形音波+三个圆形键区
-constexpr int GFX_DISC_H = 164;     // (x26,y36)-(x154,y200),整块一次推送防闪
+constexpr int GFX_DISC_W = 128;     // 音乐页圆盘+环形音波(不含三键)
+constexpr int GFX_DISC_H = 132;     // (x26,y36)底边 y=168,够 style0 射线 r+3+v*17;推屏时避开三键
 
 /**
  * 天气图标类型 = 场景组的图标化。wx 模块把 WMO code 映射到场景组,
@@ -73,7 +74,7 @@ namespace Gfx {
 // ---------------------------------------------------------------------
 
 /**
- * 分配三块 Sprite。必须在 WiFi / NimBLE 起来之前调用 ——
+ * 分配四块 Sprite。必须在 WiFi / NimBLE 起来之前调用 ——
  * 那时候堆还是整块的,大块分配不会失败。
  * @return 全部分配成功返回 true
  */
@@ -109,6 +110,7 @@ void pushStripTransparent(int x, int y, uint16_t transparentColor);
 
 /** 只送 strip 的前 h 行(只画了一行字时不必推满 28) */
 void pushStripH(int x, int y, int h);
+void pushStripRegion(int x, int y, int w, int h, int srcX = 0, int srcY = 0);
 
 /**
  * 只送 big 的一个子区域(左上 srcX,srcY 起 w×h)。big 的宽是 240,
@@ -116,6 +118,9 @@ void pushStripH(int x, int y, int h);
  * 只把数字实际占的矩形推上屏,不把整块 240×68 的底色糊到天空上。
  */
 void pushBigRegion(int x, int y, int w, int h, int srcX = 0, int srcY = 0);
+
+/** 只送 disc 的一个子区域。时钟页把皮卡丘合成进 disc 后只推包围盒。 */
+void pushDiscRegion(int x, int y, int w, int h, int srcX = 0, int srcY = 0);
 
 // ---------------------------------------------------------------------
 // 卡片 / 分隔 / 指示器 —— 都可以画在屏幕或 Sprite 上,传 t 决定

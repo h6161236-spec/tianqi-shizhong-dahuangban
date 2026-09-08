@@ -19,20 +19,21 @@ powershell -File flash.ps1
 | 参数 | 作用 |
 |---|---|
 | `-Port COM3` | 指定串口(自动探测到多个候选时用) |
-| `-Demo` | 刷演示版(假数据,见下) |
 | `-Monitor` | 刷完打开串口监视(115200) |
 | `-Erase` | 先整片擦除,**会清掉已保存的 WiFi 和设置** |
 | `-Baud 460800` | 线材可靠时提速 |
 
 刷不进去时:按住板上 BOOT 再开始刷;换根数据线(有些线只供电);再降速到 74880。
 
-## 两个版本
+## 最终版本
 
-- **normal/**(1686 KB)—— 日常用。首次上电没有 WiFi,滑到设置页 → WiFi → 扫描 → 键盘输密码配网。
-  配好后自动校时、拉 7 天预报(open-meteo),之后每 30 分钟刷新,断网继续用缓存。
+- **final/**—— 2026-09-08 正式版修复包（本次不交付演示版）。首次上电没有 WiFi,滑到设置页 → WiFi → 扫描 → 键盘输密码配网。
+  配好后自动校时、按公网 IP 认城市(可在设置里改/钉死)、拉 7 天预报(open-meteo),之后每 30 分钟刷新,断网继续用缓存。
   音乐页需要手机端通过蓝牙(NimBLE Nordic UART)推 `META|`/`LRC|`/`SPEC|` 数据。
-- **demo/**(1456 KB)—— 演示版。假频谱、假歌词、假天气,不连 WiFi 和蓝牙。
-  没手机、没网也能看全部界面动效,验机用。
+
+本次修复：局部 Sprite 推送重复交换字节、天空颜色混合无符号溢出、慢帧/快速滑动起点丢失、播放/暂停指令区分、歌词局部离屏更新，以及时钟雾层/草带覆盖和提示残影。
+正式版已编译、主机颜色/触摸回归及预览冒烟检查通过；尚未刷板实测。
+原有三个镜像已备份到 `backup-before-20260908/`。正常刷写不带 `-Erase`，保留 WiFi 和设置。
 
 ## 手上没有 esptool 也行
 
@@ -51,23 +52,19 @@ powershell -File flash.ps1
 
 - **左右滑**翻页(五页循环)
 - **上下滑**页内操作:音乐页切音波样式、天气页切视图、日期页切月份、设置页移动焦点
-- **点按**触发按钮;时钟页点皮卡丘它会跳
+- **点按**触发按钮;时钟页点皮卡丘它会跳;设置页「城市」可选自动定位或钉死某个地级市
 - 放歌时自动跳到音乐页,停播 10 秒回时钟页;手动操作后 30 秒内不自动跳
 
 ## 镜像校验
 
 ```
-[normal]
+[final]
   bootloader.bin      17536 bytes  sha256 0f65515a7e0dfe9c...
   partitions.bin       3072 bytes  sha256 aaae2888c5a6a348...
-  firmware.bin      1726112 bytes  sha256 7ba4025ef1ecf61c...
+  firmware.bin      1753920 bytes  sha256 aab3eec0fe464f808b737c710479efd6192a3e8e3059fe97ebea0ff4f589e046
 
-[demo]
-  bootloader.bin      17536 bytes  sha256 0f65515a7e0dfe9c...
-  partitions.bin       3072 bytes  sha256 aaae2888c5a6a348...
-  firmware.bin      1491232 bytes  sha256 637b36ce443ad1cb...
 ```
 
-占用:normal 版 Flash 54.7%(1.72MB / 3.15MB)、RAM 19.7%(64KB / 320KB)。
+占用:final 版 Flash 55.6%、静态 RAM 20.4%(66760 bytes；不含运行时 Sprite/WiFi/BLE 堆)。
 
 要改代码重新构建,见上一层的 `firmware/`(PlatformIO 工程)和 `../README.md`。

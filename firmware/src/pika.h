@@ -58,11 +58,4 @@ float jumpPhase();
  */
 int draw(TFT_eSPI& t, int x, int y);
 
-/**
- * 只画身体点阵(不含尾/腿/爪,无动画),给音乐页封面圆盘当头像用。
- * (x, y) = 身体左上角;scale = 每个精灵像素放多少屏幕像素。
- * 调用方负责裁剪(封面用 setViewport 裁成圆)。同预览 drawSprite(PK_BODY,…)。
- */
-void drawHead(TFT_eSPI& t, int x, int y, int scale);
-
 }  // namespace Pika

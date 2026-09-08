@@ -5,9 +5,8 @@
 # ASCII only: Windows PowerShell 5.1 reads .ps1 as ANSI, CJK would break parsing.
 #
 # Usage:
-#   powershell -File flash.ps1                 # auto-detect port, flash normal build
+#   powershell -File flash.ps1                 # auto-detect port, flash final build
 #   powershell -File flash.ps1 -Port COM3      # force a port
-#   powershell -File flash.ps1 -Demo           # flash the demo build (fake data)
 #   powershell -File flash.ps1 -Monitor        # open serial monitor after flashing
 #   powershell -File flash.ps1 -Erase          # full chip erase first (clears WiFi/prefs)
 #   powershell -File flash.ps1 -Baud 460800    # faster, if your cable is reliable
@@ -19,14 +18,13 @@
 param(
     [string]$Port = "",
     [int]$Baud = 115200,
-    [switch]$Demo,
     [switch]$Monitor,
     [switch]$Erase
 )
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$dir  = Join-Path $here $(if ($Demo) { "demo" } else { "normal" })
-$label = if ($Demo) { "demo (fake data)" } else { "normal" }
+$dir  = Join-Path $here "final"
+$label = "final"
 
 # ---- locate the three images ------------------------------------------
 $boot = Join-Path $dir "bootloader.bin"
@@ -134,9 +132,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Flashed OK - the board should reboot into the clock page." -ForegroundColor Green
-if (-not $Demo) {
-    Write-Host "First boot has no WiFi saved: swipe to Settings > WiFi to set it up."
-}
+Write-Host "First boot has no WiFi saved: swipe to Settings > WiFi to set it up."
 
 if ($Monitor) {
     Write-Host "=== Serial monitor at 115200 (Ctrl+C to quit) ===" -ForegroundColor Cyan

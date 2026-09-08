@@ -7,8 +7,10 @@
  */
 
 #include "scene.h"
+#include "gfx.h"
 #include "pika.h"
 #include "theme.h"
+#include "color_math.h"
 
 #include <math.h>
 #include <string.h>
@@ -22,17 +24,12 @@ using Scene::Params;
 constexpr int SCENE_TOP = 18;    // 场景顶(状态栏下面)
 constexpr int HORIZON = 188;     // 地平线
 constexpr int SCENE_BOT = 240;
+constexpr int PIKA_X = 104, PIKA_Y = 114, PIKA_W = 96, PIKA_H = 98;
 
 // ---------------------------------------------------------------- 颜色工具
 // 24bit 混合(与预览 mixHex 一致:先在 24bit 域混合,最后量化)
 inline uint32_t mix3(uint32_t a, uint32_t b, float t) {
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  const uint32_t ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
-  const uint32_t br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
-  return ((uint32_t)(ar + (br - ar) * t) << 16) |
-         ((uint32_t)(ag + (bg - ag) * t) << 8) |
-         (uint32_t)(ab + (bb - ab) * t);
+  return ColorMath::mix24(a, b, t);
 }
 inline uint16_t c565(uint32_t c) { return hex565(c); }
 
@@ -121,6 +118,7 @@ struct Star { float x, y, ph; uint8_t s; };
 Star STARS[26];
 struct Tuft { float x; uint8_t h; };
 Tuft TUFTS[14];
+Tuft FOOT_TUFTS[14];   // 其它页页脚用,初始化后不再滚动
 bool g_staticsInit = false;
 
 // 皮卡丘踩地扬尘(同预览 DUST:最多 12 颗,落地帧在后脚位置生成)
@@ -141,12 +139,13 @@ void initStatics() {
     TUFTS[i].x = i * 24.0f + (mbRng() * 14.0f - 7.0f);
     TUFTS[i].h = (uint8_t)(2 + (int)(mbRng() * 2.0f + 0.5f));
   }
+  for (int i = 0; i < 14; ++i) FOOT_TUFTS[i] = TUFTS[i];
   g_staticsInit = true;
 }
 
 // ---------------------------------------------------------------- 粒子池
-struct RainDrop { float x, y, v; };
-struct SnowFlake { float x, y, v, ph; uint8_t s; };
+struct RainDrop { float x, y, v; int16_t px, py; };
+struct SnowFlake { float x, y, v, ph; uint8_t s; int16_t px, py; };
 RainDrop RAIN[82];
 SnowFlake SNOWP[56];
 int g_rainN = 0, g_snowN = 0;
@@ -172,6 +171,7 @@ uint32_t g_skyRow24[SKY_BANDS];   // 每条带的 24bit 混色(供天体/星混�
 uint16_t g_skyRow16[SKY_BANDS];   // 对应 RGB565(与屏上像素比对用)
 bool     g_skyInit = false;
 bool     g_bgValid = false;       // 背景(远山/地面基色)是否已画
+bool     g_groundOverlayDirty = false;
 Scene::Group g_bgGrp = (Scene::Group)0xFF;
 float    g_bgNight = -1.0f;
 
@@ -190,6 +190,180 @@ inline uint32_t skyAtCache(float y) {
   return g_skyRow24[idx];
 }
 
+// 时钟页不透明 HUD:时间药丸(6,20,128,48)、天气 chip(214,22,100,50)、
+// 农历行(8,70,202,18)。云/天体/天空若盖上去,本帧后半段 HUD 重画之前会闪。
+bool hudHolesAtY(int y, int holes[3][2], int& nh) {
+  nh = 0;
+  if (y >= 20 && y < 68) {
+    holes[nh][0] = 6;
+    holes[nh][1] = 134;
+    ++nh;
+  }
+  if (y >= 22 && y < 72) {
+    holes[nh][0] = 214;
+    holes[nh][1] = 314;
+    ++nh;
+  }
+  if (y >= 70 && y < 88) {
+    holes[nh][0] = 8;
+    holes[nh][1] = 210;
+    ++nh;
+  }
+  for (int i = 1; i < nh; ++i) {
+    const int a0 = holes[i][0], a1 = holes[i][1];
+    int j = i;
+    while (j > 0 && holes[j - 1][0] > a0) {
+      holes[j][0] = holes[j - 1][0];
+      holes[j][1] = holes[j - 1][1];
+      --j;
+    }
+    holes[j][0] = a0;
+    holes[j][1] = a1;
+  }
+  return nh > 0;
+}
+
+void hlineMinusHud(TFT_eSPI& t, int x, int y, int w, uint16_t c) {
+  if (w <= 0) return;
+  int holes[3][2];
+  int nh = 0;
+  if (!hudHolesAtY(y, holes, nh)) {
+    t.drawFastHLine(x, y, w, c);
+    return;
+  }
+  const int x1 = x + w;
+  int cur = x;
+  for (int i = 0; i < nh; ++i) {
+    const int h0 = holes[i][0];
+    const int h1 = holes[i][1];
+    if (h0 > cur) {
+      const int r1 = h0 < x1 ? h0 : x1;
+      if (r1 > cur) t.drawFastHLine(cur, y, r1 - cur, c);
+    }
+    if (h1 > cur) cur = h1;
+    if (cur >= x1) return;
+  }
+  if (x1 > cur) t.drawFastHLine(cur, y, x1 - cur, c);
+}
+
+void fillRectMinusHud(TFT_eSPI& t, int x, int y, int w, int h, uint16_t c) {
+  if (w <= 0 || h <= 0) return;
+  if (y + h <= 20 || y >= 88) {
+    t.fillRect(x, y, w, h, c);
+    return;
+  }
+  for (int row = y; row < y + h; ++row) hlineMinusHud(t, x, row, w, c);
+}
+
+void fillCircleMinusHud(TFT_eSPI& t, int cx, int cy, int r, uint16_t c) {
+  if (r <= 0) return;
+  const int y0 = cy - r, y1 = cy + r;
+  if (y1 < 20 || y0 >= 88) {
+    t.fillCircle(cx, cy, r, c);
+    return;
+  }
+  for (int dy = -r; dy <= r; ++dy) {
+    const int d2 = r * r - dy * dy;
+    if (d2 < 0) continue;
+    const int dx = (int)(sqrtf((float)d2) + 0.5f);
+    hlineMinusHud(t, cx - dx, cy + dy, dx * 2 + 1, c);
+  }
+}
+
+void pushDiscMinusHud(int dx, int dy, int w, int h) {
+  if (w <= 0 || h <= 0) return;
+  if (dy + h <= 20 || dy >= 88) {
+    Gfx::pushDiscRegion(dx, dy, w, h);
+    return;
+  }
+  for (int row = 0; row < h; ++row) {
+    const int y = dy + row;
+    int holes[3][2];
+    int nh = 0;
+    hudHolesAtY(y, holes, nh);
+    int cur = dx;
+    const int x1 = dx + w;
+    for (int i = 0; i < nh; ++i) {
+      const int h0 = holes[i][0] > cur ? holes[i][0] : cur;
+      const int h1 = holes[i][1];
+      if (h0 > cur) {
+        const int r1 = h0 < x1 ? h0 : x1;
+        if (r1 > cur) Gfx::pushDiscRegion(cur, y, r1 - cur, 1, cur - dx, row);
+      }
+      if (h1 > cur) cur = h1;
+      if (cur >= x1) break;
+    }
+    if (x1 > cur) Gfx::pushDiscRegion(cur, y, x1 - cur, 1, cur - dx, row);
+  }
+}
+
+void stampCloud(TFT_eSPI& t, float cx, float cy, float cw, uint16_t col) {
+  for (int ri = 0; ri < 8; ++ri) {
+    const int rw = (int)(cw * CLOUD_SPR[ri][1] / 24.0f);
+    const int drawW = rw < 3 ? 3 : rw;
+    const int rxOff = (int)((cw - drawW) / 2.0f + CLOUD_SPR[ri][0] * 0.5f);
+    const int rh = (int)(cw / 26.0f);
+    const int drawH = rh < 2 ? 2 : rh;
+    t.fillRect((int)cx + rxOff, (int)cy + ri * drawH, drawW, drawH, col);
+  }
+}
+
+void stampBody(TFT_eSPI& t, int ox, int oy, float bx, float by, bool isSun,
+               float hourF, float night, float moonPh, bool rays) {
+  const int x = (int)bx - ox;
+  const int y = (int)by - oy;
+  const uint32_t sky = skyAtCache(by);
+  if (isSun && night < 0.6f) {
+    const bool warm = (hourF < 8.0f || hourF > 16.5f);
+    const uint32_t core = warm ? 0xFFB53Au : 0xFFDD46u;
+    t.fillCircle(x, y, 20,
+                 c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f),
+                           0.12f + night * 0.1f)));
+    t.fillCircle(x, y, 14,
+                 c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
+    t.fillCircle(x, y, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
+    if (rays) {
+      const uint16_t rayC = c565(mix3(sky, core, 0.75f));
+      for (int i = 0; i < 8; ++i) {
+        const float a = i * PI / 4.0f + g_clock * 0.1f;
+        t.drawLine((int)(bx + cosf(a) * 12.0f) - ox,
+                   (int)(by + sinf(a) * 12.0f) - oy,
+                   (int)(bx + cosf(a) * 16.0f) - ox,
+                   (int)(by + sinf(a) * 16.0f) - oy, rayC);
+      }
+    }
+  } else if (!isSun && night > 0.4f) {
+    const float ph = (moonPh < 0.0f) ? 0.5f : moonPh;
+    const int r = 8;
+    t.fillCircle(x, y, r + 7, c565(mix3(sky, 0xC8D4E8, 0.1f)));
+    t.fillCircle(x, y, r, c565(0xEEEDE0));
+    const float illum = 1.0f - fabsf(ph - 0.5f) * 2.0f;
+    const float off = (ph < 0.5f ? -1.0f : 1.0f) * (1.0f - illum) * 2.2f * r;
+    t.fillCircle(x + (int)off, y, r - 1, c565(mix3(sky, 0x121A34, 0.8f)));
+    const uint16_t cr = c565(0xD8D4C4);
+    t.fillCircle(x - 2, y - 2, 1, cr);
+    t.fillCircle(x + 3, y + 1, 1, cr);
+    t.fillCircle(x - 1, y + 3, 1, cr);
+  }
+}
+
+inline uint16_t sceneBgAt(int y, uint16_t grass16, uint16_t dirt16) {
+  if (y < HORIZON) {
+    int idx = (y - SCENE_TOP) / 2;
+    if (idx < 0) idx = 0;
+    if (idx >= SKY_BANDS) idx = SKY_BANDS - 1;
+    return g_skyRow16[idx];
+  }
+  if (y < HORIZON + 10) return grass16;
+  return dirt16;
+}
+
+bool inHud(int x, int y) {
+  return (y >= 20 && y < 68 && x >= 6 && x < 134) ||
+         (y >= 22 && y < 72 && x >= 214 && x < 314) ||
+         (y >= 70 && y < 88 && x >= 8 && x < 210);
+}
+
 /**
  * 把一个矩形区域恢复成「天空色 + 该处的星 + (若盖到)天体」。
  * 云/雾/天体旧区移动后,屏幕上的旧像素必须按这个顺序补回来,
@@ -204,7 +378,7 @@ void restoreSkyArea(TFT_eSPI& t, int x, int y, int w, int h, float hourF,
     if (idx < 0 || idx >= SKY_BANDS) continue;
     int hh = yy + 2;
     if (hh > y + h) hh = y + h;
-    t.fillRect(x, yy, w, hh - yy, g_skyRow16[idx]);
+    fillRectMinusHud(t, x, yy, w, hh - yy, g_skyRow16[idx]);
   }
   // 2. 重画落在区域内的星(之前被云/雾/天体擦掉,或本来就在它们下面)
   if (night > 0.35f) {
@@ -212,6 +386,7 @@ void restoreSkyArea(TFT_eSPI& t, int x, int y, int w, int h, float hourF,
     for (const auto& s : STARS) {
       const int sx = (int)s.x, sy = (int)s.y;
       if (sx < x || sx >= x + w || sy < y || sy >= y + h) continue;
+      if (inHud(sx, sy)) continue;
       // 被天体盖住的星不用画
       if (g_bodyValid && sx >= g_bodyOldX - 24 && sx <= g_bodyOldX + 24 &&
           sy >= g_bodyOldY - 24 && sy <= g_bodyOldY + 24)
@@ -231,33 +406,35 @@ void restoreSkyArea(TFT_eSPI& t, int x, int y, int w, int h, float hourF,
       for (int yy = ly; yy < ly + lh; yy += 2) {
         const int idx = (yy - SCENE_TOP) / 2;
         if (idx < 0 || idx >= SKY_BANDS) continue;
-        t.fillRect(lx, yy, lw, 2, g_skyRow16[idx]);
+        fillRectMinusHud(t, lx, yy, lw, 2, g_skyRow16[idx]);
       }
       // 天体本体(太阳/月亮),取样色用缓存带
       if (g_bodyWasSun && night < 0.6f) {
         const bool warm = (hourF < 8.0f || hourF > 16.5f);
         const uint32_t core = warm ? 0xFFB53Au : 0xFFDD46u;
         const uint32_t sky = skyAtCache(g_bodyOldY);
-        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 20,
+        fillCircleMinusHud(t, (int)g_bodyOldX, (int)g_bodyOldY, 20,
                      c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f), 0.12f + night * 0.1f)));
-        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 14,
+        fillCircleMinusHud(t, (int)g_bodyOldX, (int)g_bodyOldY, 14,
                      c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
-        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
+        fillCircleMinusHud(t, (int)g_bodyOldX, (int)g_bodyOldY, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
       } else if (!g_bodyWasSun && night > 0.4f) {
         const float ph = (moonPh < 0.0f) ? 0.5f : moonPh;
         const int r = 8;
         const uint32_t sky = skyAtCache(g_bodyOldY);
-        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, r + 7,
+        fillCircleMinusHud(t, (int)g_bodyOldX, (int)g_bodyOldY, r + 7,
                      c565(mix3(sky, 0xC8D4E8, 0.1f)));
-        t.fillCircle((int)g_bodyOldX, (int)g_bodyOldY, r, c565(0xEEEDE0));
+        fillCircleMinusHud(t, (int)g_bodyOldX, (int)g_bodyOldY, r, c565(0xEEEDE0));
         const float illum = 1.0f - fabsf(ph - 0.5f) * 2.0f;
         const float off = (ph < 0.5f ? -1.0f : 1.0f) * (1.0f - illum) * 2.2f * r;
-        t.fillCircle((int)(g_bodyOldX + off), (int)g_bodyOldY, r - 1,
+        fillCircleMinusHud(t, (int)(g_bodyOldX + off), (int)g_bodyOldY, r - 1,
                      c565(mix3(sky, 0x121A34, 0.8f)));
         const uint16_t cr = c565(0xD8D4C4);
-        t.fillCircle((int)g_bodyOldX - 2, (int)g_bodyOldY - 2, 1, cr);
-        t.fillCircle((int)g_bodyOldX + 3, (int)g_bodyOldY + 1, 1, cr);
-        t.fillCircle((int)g_bodyOldX - 1, (int)g_bodyOldY + 3, 1, cr);
+        if (!inHud((int)g_bodyOldX, (int)g_bodyOldY)) {
+          t.fillCircle((int)g_bodyOldX - 2, (int)g_bodyOldY - 2, 1, cr);
+          t.fillCircle((int)g_bodyOldX + 3, (int)g_bodyOldY + 1, 1, cr);
+          t.fillCircle((int)g_bodyOldX - 1, (int)g_bodyOldY + 3, 1, cr);
+        }
       }
     }
   }
@@ -266,6 +443,14 @@ void restoreSkyArea(TFT_eSPI& t, int x, int y, int w, int h, float hourF,
 }  // namespace
 
 namespace Scene {
+
+void invalidateCache() {
+  g_skyInit = false;
+  g_bgValid = false;
+  for (auto& c : g_cloudOld) c.valid = false;
+  for (auto& f : g_fogOld) f.valid = false;
+  g_bodyValid = false;
+}
 
 const Params& params(Group g) {
   static const Params P[GR_COUNT] = {
@@ -331,7 +516,7 @@ uint16_t groundColor(float hourF, Group g) {
 }
 
 /**
- * 缓存模式绘制(仅无雨/雪/闪电/冻雨的天气组,见 draw 入口的判断)。
+ * 缓存模式绘制(所有天气组:雨/雪在层上增量擦画,不再整帧刷天空)。
  *
  * 背景层(天空带/远山/地面基色/地平线)只在首次、天气组变化、夜色浓度
  * 明显变化时重画 —— 它们本来就不动,每帧重画纯粹烧 SPI 带宽、还制造
@@ -347,19 +532,38 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
     g_skyInit = true;
   }
 
-  const bool bgInvalid = !g_bgValid || g != g_bgGrp ||
-                         fabsf(night - g_bgNight) > 0.03f;
+  const bool bgKeyDirty = !g_bgValid || g != g_bgGrp ||
+                          fabsf(night - g_bgNight) > 0.03f;
+  bool backgroundDirty = bgKeyDirty;
 
-  // ---- 1. 天空带:行缓存,只重画颜色变了的行(平时 0 行,0 写入) ----
+  // 闪电闪光:混进天空带(只在放电那一两帧)
+  float fl = 0.0f;
+  if (p.bolt > 0.0f) {
+    if (g_bolt.t <= 0.0f) {
+      g_bolt.next -= dt;
+      if (g_bolt.next <= 0.0f) {
+        g_bolt.t = 0.28f;
+        g_bolt.x = 60.0f + fxRng() * 200.0f;
+        g_bolt.seed = fxRng();
+        g_bolt.next = 2.5f + fxRng() * 3.0f;
+      }
+    } else {
+      g_bolt.t -= dt;
+    }
+    if (g_bolt.t > 0.0f) fl = sinf(g_bolt.t / 0.28f * PI);
+  }
+
+  // ---- 1. 天空带:行缓存,只重画颜色变了的行;绝不因一行变化把整片天重刷 ----
   uint32_t top, bot;
   skyMods(hourF, p, top, bot);
-  bool bodyDirty = false;   // 有行重画撞到天体盒 → 天体要补重画
+  bool bodyDirty = false;
   for (int i = 0; i < skyH; i += 2) {
-    const uint32_t c24 = mix3(top, bot, (float)i / skyH);
+    uint32_t c24 = mix3(top, bot, (float)i / skyH);
+    if (fl > 0.0f) c24 = mix3(c24, 0xFFF6D0, fl * 0.28f);
     const uint16_t cc = c565(c24);
     const int idx = i / 2;
-    if (bgInvalid || cc != g_skyRow16[idx]) {
-      t.fillRect(0, SCENE_TOP + i, 320, 2, cc);
+    if (bgKeyDirty || cc != g_skyRow16[idx]) {
+      fillRectMinusHud(t, 0, SCENE_TOP + i, 320, 2, cc);
       g_skyRow16[idx] = cc;
       g_skyRow24[idx] = c24;
       if (g_bodyValid) {
@@ -373,6 +577,36 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
   g_bgNight = night;
   g_bgValid = true;
 
+  uint32_t grassC = mix3(0x5E9C3A, 0x24384E, night * 0.72f);
+  if (p.rain > 0.0f) grassC = mix3(grassC, 0x3E7030, p.rain * 0.4f);
+  if (p.ice) grassC = mix3(grassC, 0xB8D0E6, 0.3f);
+  const uint32_t dirtC = dirtColor24(hourF, p);
+  const uint16_t grass16 = c565(grassC);
+  const uint16_t dirt16 = c565(dirtC);
+
+  // 雨/雪上一帧的痕迹先擦掉(用天空/草地色),后面云/山/皮卡丘会把被擦到的层补回
+  if (g_rainN > 0) {
+    const float slant = g_rainSlant;
+    for (int i = 0; i < g_rainN; ++i) {
+      const auto& d = RAIN[i];
+      if (d.px < 0) continue;
+      for (int k = 0; k < 8; ++k) {
+        const int yy = d.py - k;
+        const int xx = d.px - (int)(slant * 4.0f * k / 7.0f);
+        if (yy < SCENE_TOP || yy >= SCENE_BOT || inHud(xx, yy)) continue;
+        t.drawFastHLine(xx, yy, 2, sceneBgAt(yy, grass16, dirt16));
+      }
+    }
+  }
+  if (g_snowN > 0) {
+    for (int i = 0; i < g_snowN; ++i) {
+      const auto& f = SNOWP[i];
+      if (f.px < 0) continue;
+      if (inHud(f.px, f.py)) continue;
+      t.fillRect(f.px, f.py, f.s, f.s, sceneBgAt(f.py, grass16, dirt16));
+    }
+  }
+
   // ---- 2. 天体:位置缓变,移动超过阈值(或天空行动了)才重画 ----
   float pb;
   if (hourF >= 6.0f && hourF < 18.0f) pb = (hourF - 6.0f) / 12.0f;
@@ -385,64 +619,67 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
   const bool isSun = (hourF >= 6.0f && hourF < 18.0f);
   const float bodyMove = g_bodyValid
       ? fabsf(bx - g_bodyOldX) + fabsf(by - g_bodyOldY) : 1e9f;
-  if (bgInvalid || bodyDirty || bodyMove > 1.0f || isSun != g_bodyWasSun) {
-    if (g_bodyValid && !bgInvalid && !bodyDirty) {
+  if (backgroundDirty || bodyDirty || bodyMove > 1.0f || isSun != g_bodyWasSun) {
+    if (g_bodyValid && !backgroundDirty && !bodyDirty) {
       // 擦旧天体区(天空 + 其下星)再画新位置
       const float br = g_bodyWasSun ? 23.0f : 16.0f;
       restoreSkyArea(t, (int)(g_bodyOldX - br), (int)(g_bodyOldY - br),
                      (int)(br * 2), (int)(br * 2), hourF, night, moonPh);
-    } else if (bgInvalid || bodyDirty) {
-      // 背景重画过 / 行重画擦过天体 → 擦+重画同一位置
+    } else if (backgroundDirty || bodyDirty) {
       const float br = g_bodyWasSun ? 23.0f : 16.0f;
       if (g_bodyValid) {
         for (int yy = (int)(g_bodyOldY - br); yy < (int)(g_bodyOldY + br);
              yy += 2) {
           const int idx = (yy - SCENE_TOP) / 2;
           if (idx < 0 || idx >= SKY_BANDS) continue;
-          t.fillRect((int)(g_bodyOldX - br), yy, (int)(br * 2), 2,
-                     g_skyRow16[idx]);
+          fillRectMinusHud(t, (int)(g_bodyOldX - br), yy, (int)(br * 2), 2,
+                           g_skyRow16[idx]);
         }
       }
     }
-    // 画新天体
-    const uint32_t sky = skyAtCache(by);
     if (isSun && night < 0.6f) {
       const bool warm = (hourF < 8.0f || hourF > 16.5f);
       const uint32_t core = warm ? 0xFFB53Au : 0xFFDD46u;
-      t.fillCircle((int)bx, (int)by, 20,
-                   c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f),
-                             0.12f + night * 0.1f)));
-      t.fillCircle((int)bx, (int)by, 14,
-                   c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
-      t.fillCircle((int)bx, (int)by, 9, c565(mix3(core, 0xFFF0A0, 0.25f)));
+      const uint32_t sky = skyAtCache(by);
+      fillCircleMinusHud(t, (int)bx, (int)by, 20,
+                         c565(mix3(sky, mix3(core, 0xFFE89A, 0.5f),
+                                   0.12f + night * 0.1f)));
+      fillCircleMinusHud(t, (int)bx, (int)by, 14,
+                         c565(mix3(sky, mix3(core, 0xFFE89A, 0.4f), 0.2f)));
+      fillCircleMinusHud(t, (int)bx, (int)by, 9,
+                         c565(mix3(core, 0xFFF0A0, 0.25f)));
       if (p.clouds < 0.8f) {
         const uint16_t rayC = c565(mix3(sky, core, 0.75f));
         for (int i = 0; i < 8; ++i) {
           const float a = i * PI / 4.0f + g_clock * 0.1f;
-          t.drawLine((int)(bx + cosf(a) * 12.0f),
-                     (int)(by + sinf(a) * 12.0f),
-                     (int)(bx + cosf(a) * 16.0f),
-                     (int)(by + sinf(a) * 16.0f), rayC);
-          t.drawLine((int)(bx + cosf(a) * 12.0f) + 1,
-                     (int)(by + sinf(a) * 12.0f),
-                     (int)(bx + cosf(a) * 16.0f) + 1,
-                     (int)(by + sinf(a) * 16.0f), rayC);
+          const int x0 = (int)(bx + cosf(a) * 12.0f);
+          const int y0 = (int)(by + sinf(a) * 12.0f);
+          const int x1 = (int)(bx + cosf(a) * 16.0f);
+          const int y1 = (int)(by + sinf(a) * 16.0f);
+          if (!inHud(x0, y0) && !inHud(x1, y1)) {
+            t.drawLine(x0, y0, x1, y1, rayC);
+            t.drawLine(x0 + 1, y0, x1 + 1, y1, rayC);
+          }
         }
       }
     } else if (!isSun && night > 0.4f) {
       const float ph = (moonPh < 0.0f) ? 0.5f : moonPh;
       const int r = 8;
-      t.fillCircle((int)bx, (int)by, r + 7, c565(mix3(sky, 0xC8D4E8, 0.1f)));
-      t.fillCircle((int)bx, (int)by, r, c565(0xEEEDE0));
+      const uint32_t sky = skyAtCache(by);
+      fillCircleMinusHud(t, (int)bx, (int)by, r + 7,
+                         c565(mix3(sky, 0xC8D4E8, 0.1f)));
+      fillCircleMinusHud(t, (int)bx, (int)by, r, c565(0xEEEDE0));
       const float illum = 1.0f - fabsf(ph - 0.5f) * 2.0f;
       const float off =
           (ph < 0.5f ? -1.0f : 1.0f) * (1.0f - illum) * 2.2f * r;
-      t.fillCircle((int)(bx + off), (int)by, r - 1,
-                   c565(mix3(sky, 0x121A34, 0.8f)));
+      fillCircleMinusHud(t, (int)(bx + off), (int)by, r - 1,
+                         c565(mix3(sky, 0x121A34, 0.8f)));
       const uint16_t cr = c565(0xD8D4C4);
-      t.fillCircle((int)bx - 2, (int)by - 2, 1, cr);
-      t.fillCircle((int)bx + 3, (int)by + 1, 1, cr);
-      t.fillCircle((int)bx - 1, (int)by + 3, 1, cr);
+      if (!inHud((int)bx, (int)by)) {
+        t.fillCircle((int)bx - 2, (int)by - 2, 1, cr);
+        t.fillCircle((int)bx + 3, (int)by + 1, 1, cr);
+        t.fillCircle((int)bx - 1, (int)by + 3, 1, cr);
+      }
     }
     g_bodyOldX = bx;
     g_bodyOldY = by;
@@ -450,32 +687,29 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
     g_bodyValid = true;
   }
 
-  // ---- 3. 星:每帧恢复+重画(闪烁)。天体盒内的星被天体盖着,跳过 ----
+  // ---- 3. 星:直接画新亮度,不先擦(1-2px,擦了反而闪)。跳过 HUD 和天体盒 ----
   if (night > 0.35f) {
     const float saBase = powf(night, 1.4f);
     for (const auto& s : STARS) {
       const int sx = (int)s.x, sy = (int)s.y;
+      if (inHud(sx, sy)) continue;
       if (g_bodyValid && sx >= g_bodyOldX - 24 && sx <= g_bodyOldX + 24 &&
           sy >= g_bodyOldY - 24 && sy <= g_bodyOldY + 24)
         continue;
-      int sidx = (sy - SCENE_TOP) / 2;
-      if (sidx < 0) sidx = 0;
-      if (sidx >= SKY_BANDS) sidx = SKY_BANDS - 1;
-      const uint16_t skyC = g_skyRow16[sidx];
       const float tw = 0.55f + 0.45f * sinf(g_clock * (1.2f + s.s) + s.ph);
       const float a = saBase * tw;
-      t.fillRect(sx, sy, s.s, s.s, skyC);   // 恢复
-      if (a >= 0.05f) t.fillRect(sx, sy, s.s, s.s,
-                                 c565(mix3(skyAtCache(s.y), 0xF5F2E8, a)));
+      if (a < 0.05f) continue;
+      t.fillRect(sx, sy, s.s, s.s, c565(mix3(skyAtCache(s.y), 0xF5F2E8, a)));
     }
   }
 
-  // ---- 4. 云:恢复旧区 + 画新云 ----
+  // ---- 4. 云:离屏合成(天空+星+天体+云)再一次推送,移动 <4px 时旧区被新块盖住 ----
   const int cloudN = (int)(p.clouds * 6.0f + 0.5f);
   const float cSpeed = (3.0f + p.wind * 16.0f);
   const uint32_t cloudLight = mix3(0xFFFFFF, 0x5E646C, p.dark);
   const uint32_t cloudDarkU =
       mix3(0xD9DCE2, 0x3A4048, p.dark + 0.2f > 1.0f ? 1.0f : p.dark + 0.2f);
+  CloudPos nextCloud[6] = {};
   for (int i = 0; i < cloudN; ++i) {
     const int band = i % 3;
     const float baseX = fmodf((float)(i * 137.5), 340.0f) - 10.0f;
@@ -484,150 +718,246 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
     cx -= 10.0f;
     const float cy = 52.0f + band * 26.0f + (i & 1) * 6.0f;
     const float cw = 30.0f + (i % 3) * 14.0f;
+    nextCloud[i] = {cx, cy, cw, true};
+  }
+  for (int i = 0; i < 6; ++i) {
+    if (!g_cloudOld[i].valid) continue;
+    bool covered = false;
+    if (nextCloud[i].valid) {
+      const float dx = fabsf(nextCloud[i].x - g_cloudOld[i].x);
+      const float dy = fabsf(nextCloud[i].y - g_cloudOld[i].y);
+      if (dx < 4.0f && dy < 2.0f) covered = true;
+    }
+    if (!covered) {
+      restoreSkyArea(t, (int)g_cloudOld[i].x - 4, (int)g_cloudOld[i].y,
+                     (int)g_cloudOld[i].w + 14, 20, hourF, night, moonPh);
+    }
+    g_cloudOld[i].valid = false;
+  }
+  for (int i = 0; i < cloudN; ++i) {
+    const float cx = nextCloud[i].x, cy = nextCloud[i].y, cw = nextCloud[i].w;
+    const int band = i % 3;
     const uint32_t cc = (band == 0) ? cloudDarkU : cloudLight;
     const float alpha = (band == 0) ? 0.95f : 0.8f;
-    const uint32_t sky = skyAtCache(cy + 4.0f);
-    const uint16_t col = c565(mix3(sky, cc, alpha));
-    // 恢复旧区(天空 + 被盖的星/天体)
-    if (g_cloudOld[i].valid) {
-      restoreSkyArea(t, (int)g_cloudOld[i].x, (int)g_cloudOld[i].y,
-                     (int)g_cloudOld[i].w + 6, 12, hourF, night, moonPh);
+    const uint16_t col = c565(mix3(skyAtCache(cy + 4.0f), cc, alpha));
+    const int pad = 4;
+    int x = (int)cx - pad;
+    int y = (int)cy;
+    int w = (int)cw + pad * 2 + 6;
+    int h = 20;
+    if (w > GFX_DISC_W) w = GFX_DISC_W;
+    if (h > GFX_DISC_H) h = GFX_DISC_H;
+    if (w < 1 || h < 1) continue;
+    TFT_eSprite& spr = Gfx::disc();
+    for (int row = 0; row < h; ++row) {
+      const int sy = y + row;
+      uint16_t sc;
+      if (sy < HORIZON) {
+        int idx = (sy - SCENE_TOP) / 2;
+        if (idx < 0) idx = 0;
+        if (idx >= SKY_BANDS) idx = SKY_BANDS - 1;
+        sc = g_skyRow16[idx];
+      } else {
+        sc = grass16;
+      }
+      spr.drawFastHLine(0, row, w, sc);
     }
-    for (int ri = 0; ri < 8; ++ri) {
-      const int rw = (int)(cw * CLOUD_SPR[ri][1] / 24.0f);
-      const int rxOff =
-          (int)((cw - (rw < 3 ? 3 : rw)) / 2.0f + CLOUD_SPR[ri][0] * 0.5f);
-      const int rh = (int)(cw / 26.0f);
-      const int r2 = (int)(rh * 0.55f);
-      t.fillRoundRect((int)cx + rxOff, (int)cy + ri * (rh < 2 ? 2 : rh),
-                      rw < 3 ? 3 : rw, rh < 2 ? 2 : rh, r2 < 1 ? 1 : r2, col);
+    if (night > 0.35f) {
+      const float saBase = powf(night, 1.4f);
+      for (const auto& s : STARS) {
+        const int sx = (int)s.x, sy = (int)s.y;
+        if (sx < x || sx >= x + w || sy < y || sy >= y + h) continue;
+        const float tw = 0.55f + 0.45f * sinf(g_clock * (1.2f + s.s) + s.ph);
+        const float a = saBase * tw;
+        if (a < 0.05f) continue;
+        spr.fillRect(sx - x, sy - y, s.s, s.s,
+                     c565(mix3(skyAtCache(s.y), 0xF5F2E8, a)));
+      }
     }
-    g_cloudOld[i] = {cx, cy, cw, true};
-  }
-  for (int i = cloudN; i < 6; ++i) {
-    if (g_cloudOld[i].valid) {
-      restoreSkyArea(t, (int)g_cloudOld[i].x, (int)g_cloudOld[i].y,
-                     (int)g_cloudOld[i].w + 6, 12, hourF, night, moonPh);
-      g_cloudOld[i].valid = false;
+    if (g_bodyValid &&
+        g_bodyOldX + 24 > x && g_bodyOldX - 24 < x + w &&
+        g_bodyOldY + 24 > y && g_bodyOldY - 24 < y + h) {
+      stampBody(spr, x, y, g_bodyOldX, g_bodyOldY, g_bodyWasSun, hourF, night,
+                moonPh, false);
     }
+    stampCloud(spr, cx - x, cy - y, cw, col);
+    pushDiscMinusHud(x, y, w, h);
+    g_cloudOld[i] = nextCloud[i];
   }
 
-  // ---- 5. 雾:恢复旧区 + 画新雾(淡雾椭圆,移动慢) ----
+  // ---- 5. 雾:移动极慢,活动时只叠画不整块恢复(420×28 恢复会闪) ----
   if (p.fog > 0.05f) {
     for (int i = 0; i < 3; ++i) {
       const float fy = 70.0f + i * 46.0f;
       const float fx = fmodf(g_clock * (2.0f + i), 60.0f) - 30.0f;
       const float ecx =
           160.0f + sinf(g_clock * 0.3f + i) * 40.0f + fx * 0.3f;
-      if (g_fogOld[i].valid) {
-        restoreSkyArea(t, (int)g_fogOld[i].x - 108, (int)g_fogOld[i].y - 7,
-                       216, 15, hourF, night, moonPh);
-      }
       const uint32_t bg = skyAtCache(fy);
-      t.fillEllipse((int)ecx, (int)fy, 210, 13,
-                    c565(mix3(bg, 0xC5C1B2, p.fog * 0.38f)));
+      // 雾也必须避开静态 HUD，否则每帧会擦掉时间和农历。
+      const uint16_t fogC = c565(mix3(bg, 0xC5C1B2, p.fog * 0.38f));
+      for (int yy = -13; yy <= 13; ++yy) {
+        const int half = (int)(210.0f * sqrtf(1.0f - yy * yy / 169.0f));
+        const int row = (int)fy + yy;
+        const int left = (int)ecx - half, right = (int)ecx + half + 1;
+        if (withPika && row >= PIKA_Y && row < PIKA_Y + PIKA_H) {
+          if (left < PIKA_X)
+            hlineMinusHud(t, left, row, (right < PIKA_X ? right : PIKA_X) - left, fogC);
+          if (right > PIKA_X + PIKA_W) {
+            const int start = left > PIKA_X + PIKA_W ? left : PIKA_X + PIKA_W;
+            hlineMinusHud(t, start, row, right - start, fogC);
+          }
+        } else {
+          hlineMinusHud(t, left, row, half * 2 + 1, fogC);
+        }
+      }
       g_fogOld[i] = {ecx, fy, true};
     }
   } else {
     for (int i = 0; i < 3; ++i) {
       if (g_fogOld[i].valid) {
-        restoreSkyArea(t, (int)g_fogOld[i].x - 108, (int)g_fogOld[i].y - 7,
-                       216, 15, hourF, night, moonPh);
+        restoreSkyArea(t, (int)g_fogOld[i].x - 210, (int)g_fogOld[i].y - 14,
+                       420, 28, hourF, night, moonPh);
         g_fogOld[i].valid = false;
       }
     }
   }
 
-  // ---- 6. 远山 + 地面基色 + 地平线(仅失效时;平时被 7/8 的恢复保持) ----
+  // ---- 6. 远山 + 地面基色 + 地平线(仅失效时整块;每帧椭圆覆盖雨滴空洞) ----
   const float snowCover = snowCoverOf(p);
-  if (bgInvalid) {
-    const uint32_t hillC = mix3(mix3(0x4E8230, 0x2E4A5E, night * 0.7f),
-                                0xE8E6DC, p.snow > 0.0f ? 0.75f : 0.0f);
-    const uint32_t hillC2 = mix3(mix3(0x3E6A24, 0x22384C, night * 0.7f),
-                                 0xD8D6CE, p.snow > 0.0f ? 0.75f : 0.0f);
+  const uint32_t hillC = mix3(mix3(0x4E8230, 0x2E4A5E, night * 0.7f),
+                               0xE8E6DC, p.snow > 0.0f ? 0.75f : 0.0f);
+  const uint32_t hillC2 = mix3(mix3(0x3E6A24, 0x22384C, night * 0.7f),
+                                0xD8D6CE, p.snow > 0.0f ? 0.75f : 0.0f);
+  // 远山很大,每帧 fillEllipse 会把地平线扫一遍 = 闪。无雨雪时山不动,
+  // 只在背景重建或雨/雪刚擦出空洞时重画。
+  if (backgroundDirty || g_rainN > 0 || g_snowN > 0) {
+    // 山的下半部在草地/泥土后面，不能覆盖已缓存的地面。
+    t.setViewport(0, SCENE_TOP, SCR_W, HORIZON - SCENE_TOP, false);
     t.fillEllipse(70, HORIZON + 6, 120, 26, c565(hillC2));
     t.fillEllipse(250, HORIZON + 10, 140, 30, c565(hillC));
+    t.resetViewport();
   }
-  const uint32_t grassC = mix3(0x5E9C3A, 0x24384E, night * 0.72f);
-  const uint32_t dirtC = dirtColor24(hourF, p);
-  if (bgInvalid) {
-    t.fillRect(0, HORIZON, 320, 10, c565(grassC));
-    t.fillRect(0, HORIZON + 10, 320, SCENE_BOT - HORIZON - 10, c565(dirtC));
+  if (backgroundDirty) {
+    t.fillRect(0, HORIZON, 320, 10, grass16);
+    t.fillRect(0, HORIZON + 10, 320, SCENE_BOT - HORIZON - 10, dirt16);
     t.fillRect(0, HORIZON, 320, 2,
                c565(mix3(mix3(0x6EB044, 0x2E4458, night * 0.6f), 0xF2F0E8,
                          snowCover * 0.8f)));
   }
 
-  // ---- 7. 草丛带:整带每帧重画(滚动),先擦基色再画草 ----
+  // ---- 7. 草丛带:离屏合成整带再一次推送,草尖不再「先擦后画」----
+  if (g_groundOverlayDirty) {
+    // Toast 占 y196..219；上半由草带/皮卡丘覆盖，下半只恢复泥土。
+    t.fillRect(0, HORIZON + 18, SCR_W, 220 - HORIZON - 18, dirt16);
+    g_groundOverlayDirty = false;
+  }
   advanceGround(dt);
-  t.fillRect(0, HORIZON, 320, 10, c565(grassC));
-  t.fillRect(0, HORIZON + 10, 320, 8, c565(dirtC));
   const uint32_t tuftC = (snowCover > 0.5f)
       ? mix3(0xF2F0E8, 0xFFFFFF, 0.3f)
       : mix3(mix3(0x4E8A2E, 0x22362C, night * 0.7f), 0xFFFFFF, snowCover);
-  for (const auto& tf : TUFTS) {
-    const int tx = (int)tf.x;
-    if (tx < -8 || tx > 320) continue;
-    const float sway =
-        (p.wind > 0.5f) ? sinf(g_clock * 6.0f + tf.x * 0.3f) : 0.0f;
+  {
+    TFT_eSprite& st = Gfx::strip();
+    st.fillRect(0, 0, 320, 10, grass16);
+    st.fillRect(0, 10, 320, 8, dirt16);
+    st.fillRect(0, 0, 320, 2,
+                c565(mix3(mix3(0x6EB044, 0x2E4458, night * 0.6f), 0xF2F0E8,
+                          snowCover * 0.8f)));
     const uint16_t tc = c565(tuftC);
-    t.fillRect(tx, HORIZON + 4 + (tx % 7), 2, tf.h * 2, tc);
-    t.fillRect(tx + 2 + (int)sway, HORIZON + 3 + (tx % 5), 2, tf.h * 2 + 2, tc);
-    t.fillRect(tx + 1 + (int)(sway * 0.5f), HORIZON + 6 + (tx % 11), 2,
-               tf.h * 2 - 2, tc);
+    for (const auto& tf : TUFTS) {
+      const int tx = (int)tf.x;
+      if (tx < -8 || tx > 320) continue;
+      const float sway =
+          (p.wind > 0.5f) ? sinf(g_clock * 6.0f + tf.x * 0.3f) : 0.0f;
+      st.fillRect(tx, 4 + (tx % 7), 2, tf.h * 2, tc);
+      st.fillRect(tx + 2 + (int)sway, 3 + (tx % 5), 2, tf.h * 2 + 2, tc);
+      st.fillRect(tx + 1 + (int)(sway * 0.5f), 6 + (tx % 11), 2, tf.h * 2 - 2,
+                  tc);
+    }
+    if (withPika) {
+      // 中间由下一步连同皮卡丘一次合成；先推整带会短暂擦掉它的脚。
+      Gfx::pushStripRegion(0, HORIZON, PIKA_X, 18);
+      Gfx::pushStripRegion(PIKA_X + PIKA_W, HORIZON,
+                           SCR_W - PIKA_X - PIKA_W, 18, PIKA_X + PIKA_W);
+    } else {
+      Gfx::pushStripH(0, HORIZON, 18);
+    }
   }
 
-  // ---- 8. 皮卡丘区:每次恢复包围区背景(天空/草/dirt + 区内草丛 + 相交雾) ----
+  // ---- 8. 皮卡丘:离屏合成再一次推送,杜绝「先擦后画」闪烁 ----
   if (withPika) {
     constexpr int PK_X = (320 - Pika::PK_W) / 2;      // 136
     constexpr int PK_Y = HORIZON + 4 - Pika::PK_H;    // 146
+    constexpr int SX = PIKA_X, SY = PIKA_Y, SW = PIKA_W, SH = PIKA_H;
     Pika::setFrame((int)(g_groundRun / 22.0f * 4.0f) & 3);
-    const int bx0 = PK_X - 24;      // 112:含尾巴
-    const int by0 = PK_Y - 2;       // 144
-    const int bw = Pika::PK_W + Pika::TAIL_W + 2;     // 72
-    const int bh = Pika::PK_H + 22;                   // 68 → 144..212
-    // 天空段
-    for (int yy = by0; yy < HORIZON; yy += 2) {
-      const int idx = (yy - SCENE_TOP) / 2;
-      if (idx < 0 || idx >= SKY_BANDS) continue;
-      int hh = yy + 2;
-      if (hh > HORIZON) hh = HORIZON;
-      t.fillRect(bx0, yy, bw, hh - yy, g_skyRow16[idx]);
+
+    TFT_eSprite& spr = Gfx::disc();
+    for (int row = 0; row < SH; ++row) {
+      const int sy = SY + row;
+      uint16_t c;
+      if (sy < HORIZON) {
+        int idx = (sy - SCENE_TOP) / 2;
+        if (idx < 0) idx = 0;
+        if (idx >= SKY_BANDS) idx = SKY_BANDS - 1;
+        c = g_skyRow16[idx];
+      } else if (sy < HORIZON + 10) {
+        c = grass16;
+      } else {
+        c = dirt16;
+      }
+      spr.drawFastHLine(0, row, SW, c);
     }
-    // 草段 + dirt 段
-    t.fillRect(bx0, HORIZON, bw, 10, c565(grassC));
-    t.fillRect(bx0, HORIZON + 10, bw, by0 + bh - HORIZON - 10, c565(dirtC));
-    // 区内草丛重画(上面的恢复把步骤 7 的草擦掉了)
-    for (const auto& tf : TUFTS) {
-      const int tx = (int)tf.x;
-      if (tx < bx0 - 8 || tx > bx0 + bw) continue;
-      const uint16_t tc = c565(tuftC);
-      t.fillRect(tx, HORIZON + 4 + (tx % 7), 2, tf.h * 2, tc);
-      t.fillRect(tx + 2, HORIZON + 3 + (tx % 5), 2, tf.h * 2 + 2, tc);
-      t.fillRect(tx + 1, HORIZON + 6 + (tx % 11), 2, tf.h * 2 - 2, tc);
+    spr.setViewport(0, 0, SW, HORIZON - SY, false);
+    spr.fillEllipse(70 - SX, HORIZON + 6 - SY, 120, 26, c565(hillC2));
+    spr.fillEllipse(250 - SX, HORIZON + 10 - SY, 140, 30, c565(hillC));
+    spr.resetViewport();
+    spr.fillRect(0, HORIZON - SY, SW, 2,
+                 c565(mix3(mix3(0x6EB044, 0x2E4458, night * 0.6f), 0xF2F0E8,
+                           snowCover * 0.8f)));
+    for (int i = 0; i < 6; ++i) {
+      if (!g_cloudOld[i].valid) continue;
+      const float cx = g_cloudOld[i].x, cy = g_cloudOld[i].y,
+                  cw = g_cloudOld[i].w;
+      if (cx + cw < SX || cx > SX + SW || cy + 18 < SY || cy > SY + SH)
+        continue;
+      const int band = i % 3;
+      const uint32_t cc = (band == 0) ? cloudDarkU : cloudLight;
+      const float alpha = (band == 0) ? 0.95f : 0.8f;
+      stampCloud(spr, cx - SX, cy - SY, cw,
+                 c565(mix3(skyAtCache(cy + 4.0f), cc, alpha)));
     }
-    // 相交的雾重画(第三条雾 fy=162±13 会盖到皮卡丘区天空)
+    // 与屏幕天空相同的雾层，避免皮卡丘合成盒挖掉雾带。
     if (p.fog > 0.05f) {
       for (int i = 0; i < 3; ++i) {
         const float fy = 70.0f + i * 46.0f;
-        if (fy + 13 < by0 || fy - 13 > HORIZON) continue;
         const float fx = fmodf(g_clock * (2.0f + i), 60.0f) - 30.0f;
-        const float ecx =
-            160.0f + sinf(g_clock * 0.3f + i) * 40.0f + fx * 0.3f;
-        const uint32_t bg = skyAtCache(fy);
-        t.fillEllipse((int)ecx, (int)fy, 210, 13,
-                      c565(mix3(bg, 0xC5C1B2, p.fog * 0.38f)));
+        const float cx = 160.0f + sinf(g_clock * 0.3f + i) * 40.0f + fx * 0.3f;
+        for (int yy = -13; yy <= 13; ++yy) {
+          const int half = (int)(210.0f * sqrtf(1.0f - yy * yy / 169.0f));
+          spr.drawFastHLine((int)cx - half - SX, (int)fy + yy - SY,
+                           half * 2 + 1,
+                           c565(mix3(skyAtCache(fy), 0xC5C1B2, p.fog * 0.38f)));
+        }
       }
     }
-    // 影子 / 尘 / 皮卡丘本体
+    const uint16_t tc = c565(tuftC);
+    for (const auto& tf : TUFTS) {
+      const int tx = (int)tf.x - SX;
+      if (tx < -8 || tx > SW) continue;
+      const int ox = (int)tf.x;
+      spr.fillRect(tx, HORIZON + 4 + (ox % 7) - SY, 2, tf.h * 2, tc);
+      spr.fillRect(tx + 2, HORIZON + 3 + (ox % 5) - SY, 2, tf.h * 2 + 2, tc);
+      spr.fillRect(tx + 1, HORIZON + 6 + (ox % 11) - SY, 2, tf.h * 2 - 2, tc);
+    }
+
     float lift = 0.0f;
     const float jp = Pika::jumpPhase();
     if (jp >= 0.0f) lift = sinf(PI * jp) * 26.0f;
     float shrink = 1.0f - lift / 40.0f;
     if (shrink < 0.5f) shrink = 0.5f;
     const int shadowR = (int)(Pika::PK_W * 0.42f * shrink + 0.5f);
-    t.fillEllipse(PK_X + Pika::PK_W / 2, PK_Y + 22 * Pika::PK_SC + 3,
-                  shadowR, 3, c565(mix3(grassC, 0x141C08, 0.3f)));
+    spr.fillEllipse(PK_X + Pika::PK_W / 2 - SX,
+                    PK_Y + 22 * Pika::PK_SC + 3 - SY, shadowR, 3,
+                    c565(mix3(grassC, 0x141C08, 0.3f)));
     const uint16_t dustC = c565(
         (snowCover > 0.4f)
             ? 0xEAEAE2u
@@ -646,10 +976,6 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
     for (int i = g_dustN - 1; i >= 0; --i) {
       Dust& d = DUST[i];
       if (dt > 0.0f) {
-        // 先恢复旧位置(尘脚下的草/dirt 基色),再更新位置
-        const uint16_t bgC =
-            (d.y < HORIZON + 10) ? c565(grassC) : c565(dirtC);
-        t.fillRect((int)d.x - 1, (int)d.y - 1, 4, 4, bgC);
         d.life -= 1.68f * dt;
         if (d.life <= 0.0f) { DUST[i] = DUST[--g_dustN]; continue; }
         d.x += d.vx * dt;
@@ -661,9 +987,131 @@ void drawCached(TFT_eSPI& t, float hourF, Group g, const Params& p,
       }
       const int s = (d.life > 0.6f) ? 2 : 1;
       const uint8_t a = (uint8_t)(d.life * 0.5f * 255.0f);
-      t.fillRect((int)d.x, (int)d.y, s, s, lerp565(c565(dirtC), dustC, a));
+      const int dx = (int)d.x - SX, dy = (int)d.y - SY;
+      if (dx < 0 || dy < 0 || dx >= SW || dy >= SH) continue;
+      spr.fillRect(dx, dy, s, s, lerp565(dirt16, dustC, a));
     }
-    Pika::draw(t, PK_X, PK_Y);
+    Pika::draw(spr, PK_X - SX, PK_Y - SY);
+    Gfx::pushDiscRegion(SX, SY, SW, SH);
+  }
+
+  // ---- 9. 雨 / 雪 / 闪电 / 冻雨:画在最上层;旧痕迹在本帧开头已擦 ----
+  if (p.rain > 0.0f) {
+    const uint16_t rc = c565(mix3(0x9CBEF0, 0x51648C, night));
+    const float slant = p.wind * 1.1f;
+    g_rainSlant = slant;
+    const int want = (int)(12.0f + p.rain * 70.0f + 0.5f);
+    if (g_rainN == 0) {
+      for (int i = 0; i < 14; ++i) {
+        RAIN[i].x = fxRng() * 340.0f - 10.0f;
+        RAIN[i].y = fxRng() * 190.0f + 18.0f;
+        RAIN[i].v = 260.0f + fxRng() * 90.0f;
+        RAIN[i].px = -1;
+        RAIN[i].py = -1;
+      }
+      g_rainN = 14;
+    }
+    while (g_rainN > want) --g_rainN;
+    while (g_rainN < want) {
+      RAIN[g_rainN].x = fxRng() * 340.0f - 10.0f;
+      RAIN[g_rainN].y = 18.0f + fxRng() * 180.0f;
+      RAIN[g_rainN].v = 260.0f + fxRng() * 90.0f;
+      RAIN[g_rainN].px = -1;
+      RAIN[g_rainN].py = -1;
+      ++g_rainN;
+    }
+    for (int i = 0; i < g_rainN; ++i) {
+      auto& d = RAIN[i];
+      if (dt > 0.0f) {
+        d.y += d.v * dt;
+        d.x -= g_rainSlant * 3.0f * dt;
+        if (d.y > SCENE_BOT + 8.0f || d.x < -10.0f) {
+          d.y = 14.0f;
+          d.x = fxRng() * 350.0f - 10.0f;
+          d.px = -1;
+        }
+      }
+      const int nx = (int)d.x, ny = (int)d.y;
+      if (!inHud(nx, ny)) {
+        t.drawLine(nx, ny, (int)(d.x - slant * 4.0f), (int)(d.y - 7.0f), rc);
+      }
+      d.px = (int16_t)nx;
+      d.py = (int16_t)ny;
+    }
+  } else {
+    g_rainN = 0;
+  }
+
+  if (p.snow > 0.0f) {
+    const uint16_t sc = c565(0xF6F4EC);
+    const int want = (int)(10.0f + p.snow * 46.0f + 0.5f);
+    if (g_snowN == 0) {
+      for (int i = 0; i < 14; ++i) {
+        SNOWP[i].x = fxRng() * 340.0f - 10.0f;
+        SNOWP[i].y = fxRng() * 190.0f + 18.0f;
+        SNOWP[i].v = 26.0f + fxRng() * 20.0f;
+        SNOWP[i].ph = fxRng() * 6.28f;
+        SNOWP[i].s = (fxRng() < 0.4f) ? 3 : 2;
+        SNOWP[i].px = -1;
+        SNOWP[i].py = -1;
+      }
+      g_snowN = 14;
+    }
+    while (g_snowN > want) --g_snowN;
+    while (g_snowN < want) {
+      SNOWP[g_snowN].x = fxRng() * 340.0f - 10.0f;
+      SNOWP[g_snowN].y = 18.0f + fxRng() * 180.0f;
+      SNOWP[g_snowN].v = 26.0f + fxRng() * 20.0f;
+      SNOWP[g_snowN].ph = fxRng() * 6.28f;
+      SNOWP[g_snowN].s = (fxRng() < 0.4f) ? 3 : 2;
+      SNOWP[g_snowN].px = -1;
+      SNOWP[g_snowN].py = -1;
+      ++g_snowN;
+    }
+    for (int i = 0; i < g_snowN; ++i) {
+      auto& f = SNOWP[i];
+      if (dt > 0.0f) {
+        f.y += f.v * dt;
+        f.x += (sinf(g_clock * 1.5f + f.ph) * 0.5f - p.wind * 0.4f) * 60.0f *
+               dt;
+        if (f.y > SCENE_BOT + 4.0f || f.x < -6.0f) {
+          f.y = 14.0f;
+          f.x = fxRng() * 340.0f - 10.0f;
+          f.px = -1;
+        }
+      }
+      const int nx = (int)f.x, ny = (int)f.y;
+      if (!inHud(nx, ny)) t.fillRect(nx, ny, f.s, f.s, sc);
+      f.px = (int16_t)nx;
+      f.py = (int16_t)ny;
+    }
+  } else {
+    g_snowN = 0;
+  }
+
+  if (p.bolt > 0.0f && g_bolt.t > 0.16f) {
+    const uint16_t bc = c565(0xFFF8C8);
+    float bx2 = g_bolt.x, by2 = 66.0f;
+    const int jit = 6 + (int)(g_bolt.seed * 977.0f) % 7;
+    const float dir = (g_bolt.seed > 0.5f) ? 1.0f : -1.0f;
+    for (int i = 1; i <= 5; ++i) {
+      const float nx = bx2 + dir * jit * ((i % 2) ? 1.0f : -1.0f);
+      const float ny = by2 + 20.0f;
+      t.drawWideLine(bx2, by2, nx, ny, 2.0f, bc,
+                     c565(skyAtCache((by2 + ny) * 0.5f)));
+      bx2 = nx;
+      by2 = ny;
+    }
+  }
+
+  if (p.ice) {
+    for (int i = 0; i < 7; ++i) {
+      const float tw = sinf(g_clock * 3.0f + i * 2.4f);
+      if (tw > 0.3f) {
+        t.fillRect(20 + i * 42, HORIZON + 6 + (i % 3) * 8, 2, 2,
+                   c565(mix3(dirtC, 0xEAF4FF, (tw - 0.3f) * 0.8f)));
+      }
+    }
   }
 }
 
@@ -672,14 +1120,26 @@ void draw(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
   if (!g_staticsInit) initStatics();
   const Params& p = params(g);
   if (dt > 0.0f) g_clock += dt;
+  drawCached(t, hourF, g, p, nightness(hourF), dt, moonPh, withPika);
+}
+
+void restoreGroundOverlay() { g_groundOverlayDirty = true; }
+
+#if 0
+void draw_OLD_FULL_PATH(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
+          bool withPika) {
+  if (!g_staticsInit) initStatics();
+  const Params& p = params(g);
+  if (dt > 0.0f) g_clock += dt;
   const float night = nightness(hourF);
 
-  // 缓存模式:无雨/雪/闪电/冻雨时,背景层按需重画,每帧只画动的元素。
-  // 这是消除时钟页「边擦边画闪烁」的核心(SPI 写入 ~110KB → ~30KB/帧)。
-  if (p.rain <= 0.0f && p.snow <= 0.0f && p.bolt <= 0.0f && !p.ice) {
+  if (p.rain <= 0.0f && p.snow <= 0.0f && p.fog <= 0.0f &&
+      p.bolt <= 0.0f && !p.ice) {
     drawCached(t, hourF, g, p, night, dt, moonPh, withPika);
     return;
   }
+
+  invalidateCache();
 
   // ---- 天空底色(含阴天/雾/雷暴/冻雨调色) ----
   uint32_t top, bot;
@@ -1009,6 +1469,7 @@ void draw(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
     }
   }
 }
+#endif
 
 // =====================================================================
 //  地面滚动 + 五页共用页脚
@@ -1031,9 +1492,8 @@ void advanceGround(float dt) {
   if (g_groundRun > 22.0f * 4096.0f) g_groundRun -= 22.0f * 4096.0f;
 }
 
-void footer(TFT_eSPI& t, float dt, uint16_t bg) {
+void footer(TFT_eSPI& t, uint16_t bg) {
   if (!g_staticsInit) initStatics();
-  advanceGround(dt);
 
   const int gy = FOOT_TOP + 8;   // 草皮顶边
 
@@ -1047,9 +1507,9 @@ void footer(TFT_eSPI& t, float dt, uint16_t bg) {
   t.fillRect(0, gy, 320, FOOT_H - 8, hex565(0x7CB44E));
   t.drawFastHLine(0, gy, 320, hex565(0x9AD066));
 
-  // 草丛:与时钟页同一份 TUFTS、同一速度 —— 整机是同一片地面
+  // 静止草丛(不跟时钟页一起滚)
   const uint16_t tc = hex565(0x5E9C3A);
-  for (const auto& tf : TUFTS) {
+  for (const auto& tf : FOOT_TUFTS) {
     const int tx = (int)tf.x;
     if (tx < -8 || tx > 320) continue;
     t.fillRect(tx, gy + 2 + (tx % 4), 2, tf.h * 2, tc);
