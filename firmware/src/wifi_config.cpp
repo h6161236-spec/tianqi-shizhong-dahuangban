@@ -32,6 +32,7 @@ static uint32_t g_connectStartedMs = 0;
 static uint32_t g_nextAutoScanMs = 0;
 static uint8_t g_triedKnownMask = 0;
 static bool g_wasConnected = false;
+static WifiProvisionResult g_provision = WIFI_PROVISION_IDLE;
 
 static constexpr uint8_t SCAN_MAX_ATTEMPTS = 3;
 static constexpr uint32_t SCAN_TIMEOUT_MS = 15000;
@@ -87,6 +88,25 @@ static void connectInternal(const char* ssid, const char* password, int known) {
   WiFi.begin(ssidCopy, passCopy);
   Serial.printf("[wifi] Connecting to %s%s\n", ssidCopy,
                 known >= 0 ? " (known)" : "");
+}
+
+static void restorePreferredConfig() {
+  g_config.ssid[0] = g_config.password[0] = 0;
+  g_config.saved = g_savedCount > 0;
+  if (g_savedCount > 0) {
+    copyText(g_config.ssid, sizeof(g_config.ssid), g_saved[0].ssid);
+    copyText(g_config.password, sizeof(g_config.password), g_saved[0].password);
+  }
+}
+
+static void failProvision() {
+  WiFi.disconnect(false, false);
+  g_provision = WIFI_PROVISION_FAILED;
+  g_config.connecting = false;
+  g_config.connected = false;
+  restorePreferredConfig();
+  g_nextAutoScanMs = millis() + 1000;
+  Serial.println("[wifi] Candidate network failed; saved credentials retained");
 }
 
 static bool tryNextKnownNetwork() {
@@ -194,6 +214,7 @@ static void pollScan() {
 //  初始化
 // =====================================================================
 void init() {
+  g_provision = WIFI_PROVISION_IDLE;
   g_config.saved = false;
   g_config.connecting = false;
   g_config.connected = false;
@@ -242,6 +263,7 @@ void init() {
 //  扫描
 // =====================================================================
 void startScan() {
+  if (g_provision == WIFI_PROVISION_CONNECTING) failProvision();
   if (WiFi.status() != WL_CONNECTED && g_config.connecting) {
     WiFi.disconnect(false, false);
     g_config.connecting = false;
@@ -277,6 +299,7 @@ int getScanResults(WiFiAP* results, int maxCount) {
 //  连接
 // =====================================================================
 void connect(const char* ssid, const char* password) {
+  g_provision = WIFI_PROVISION_IDLE;
   WiFi.scanDelete();
   g_scanActive = false;
   g_scanState = WIFI_MGR_SCAN_IDLE;
@@ -286,8 +309,26 @@ void connect(const char* ssid, const char* password) {
   connectInternal(ssid, password, known);
 }
 
+void beginProvision(const char* ssid, const char* password) {
+  if (!ssid || !ssid[0]) {
+    g_provision = WIFI_PROVISION_FAILED;
+    return;
+  }
+  WiFi.scanDelete();
+  g_scanActive = false;
+  g_scanState = WIFI_MGR_SCAN_IDLE;
+  g_triedKnownMask = 0;
+  g_provision = WIFI_PROVISION_CONNECTING;
+  WiFi.disconnect(false, false);
+  connectInternal(ssid, password, -1);
+}
+
+WifiProvisionResult provisionResult() { return g_provision; }
+
 bool isConnected() {
   if (WiFi.status() == WL_CONNECTED) {
+    if (g_provision == WIFI_PROVISION_CONNECTING &&
+        WiFi.SSID() != g_config.ssid) return false;
     g_config.connected = true;
     g_config.connecting = false;
     return true;
@@ -299,6 +340,28 @@ bool isConnected() {
 void service() {
   pollScan();
   const uint32_t now = millis();
+  if (g_provision == WIFI_PROVISION_CONNECTING) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (WiFi.SSID() != g_config.ssid) {
+        failProvision();
+        return;
+      }
+      char ssid[WIFI_SSID_CAPACITY], password[WIFI_PASS_CAPACITY];
+      copyText(ssid, sizeof(ssid), g_config.ssid);
+      copyText(password, sizeof(password), g_config.password);
+      if (!saveConfig(ssid, password)) {
+        failProvision();
+        return;
+      }
+      g_provision = WIFI_PROVISION_SUCCESS;
+      Serial.printf("[wifi] Candidate verified: %s\n", ssid);
+    } else if (now - g_connectStartedMs > CONNECT_TIMEOUT_MS) {
+      failProvision();
+      return;
+    } else {
+      return;
+    }
+  }
   if (WiFi.status() == WL_CONNECTED) {
     g_config.connected = true;
     g_config.connecting = false;
@@ -370,6 +433,7 @@ bool loadConfig(char* ssid, char* password) {
 }
 
 void clearConfig() {
+  g_provision = WIFI_PROVISION_IDLE;
   prefs.begin("wifi", false);
   prefs.clear();
   prefs.end();

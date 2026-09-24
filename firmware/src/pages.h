@@ -31,7 +31,7 @@ enum UiPage : uint8_t {
   PG_N
 };
 
-/** 音乐/蓝牙显示状态。BLE 回调写它,音乐页读它 */
+/** 音乐/蓝牙显示状态。主循环从 BLE 邮箱合并,音乐页读取 */
 struct MediaState {
   bool advOn;            // 蓝牙在广播
   bool connected;        // NUS 已连接
@@ -52,6 +52,7 @@ bool bleSendBtn(const char* btn);
 void bleDisconnectPeer();
 void bleRestartAdv();
 void bleSetAdv(bool on);
+void requestWeatherRefresh(bool relocate);
 
 namespace UI {
 

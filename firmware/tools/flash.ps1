@@ -50,19 +50,21 @@ if ($BuildOnly) { exit 0 }
 if (-not $Port) {
     $cands = @()
     try {
-        $cands = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
-            Where-Object {
-                # Match "... (COM7)" but skip Bluetooth virtual ports. The CJK
-                # name for those is matched by codepoint escape, because this
-                # file must stay ASCII (PS 5.1 reads .ps1 as ANSI).
-                $bt = [char]0x84DD + [char]0x7259     # "Bluetooth" in Chinese
-                $_.Name -match '\(COM\d+\)' -and
-                $_.Name -notmatch 'Bluetooth' -and
-                -not $_.Name.Contains($bt)
-            } |
-            ForEach-Object {
-                if ($_.Name -match '\((COM\d+)\)') { $matches[1] }
-            }
+        $cands = @(
+            Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+                Where-Object {
+                    # Match "... (COM7)" but skip Bluetooth virtual ports. The CJK
+                    # name for those is matched by codepoint escape, because this
+                    # file must stay ASCII (PS 5.1 reads .ps1 as ANSI).
+                    $bt = [char]0x84DD + [char]0x7259     # "Bluetooth" in Chinese
+                    $_.Name -match '\(COM\d+\)' -and
+                    $_.Name -notmatch 'Bluetooth' -and
+                    -not $_.Name.Contains($bt)
+                } |
+                ForEach-Object {
+                    if ($_.Name -match '\((COM\d+)\)') { $matches[1] }
+                }
+        )
     } catch {}
     if ($cands.Count -eq 1) {
         $Port = $cands[0]

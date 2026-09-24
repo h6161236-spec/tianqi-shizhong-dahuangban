@@ -32,7 +32,12 @@ $edgeArgs = @(
   "--screenshot=$out", $uri
 )
 & $edge $edgeArgs 2>&1 | Out-Null
-Remove-Item $profileDir -Recurse -Force -ErrorAction SilentlyContinue
+$tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+$resolvedProfile = [IO.Path]::GetFullPath($profileDir)
+if ($resolvedProfile.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
+    (Split-Path -Leaf $resolvedProfile) -match '^edge_shot_[0-9a-f]{8}$') {
+  Remove-Item -LiteralPath $resolvedProfile -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 if (-not (Test-Path $out)) { throw "screenshot failed: $out" }
 
@@ -40,7 +45,7 @@ if (-not (Test-Path $out)) { throw "screenshot failed: $out" }
 Add-Type -AssemblyName System.Drawing
 $src = [System.Drawing.Image]::FromFile($out)
 $cw = 960; $ch = 720
-$cx = 60; $cy = 148
+$cx = 160; $cy = 140
 $crop = New-Object System.Drawing.Rectangle($cx, $cy, $cw, $ch)
 $bmp = New-Object System.Drawing.Bitmap($cw, $ch)
 $g = [System.Drawing.Graphics]::FromImage($bmp)

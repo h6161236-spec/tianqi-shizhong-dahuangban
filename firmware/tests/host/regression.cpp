@@ -2,7 +2,9 @@
 #include <string.h>
 #include "Arduino.h"
 #include "color_math.h"
+#include "lunar.h"
 #include "touch.h"
+#include "utf8_copy.h"
 
 TestSerial Serial;
 static uint32_t now;
@@ -26,6 +28,24 @@ int main() {
   check(ColorMath::mix24(0xFF0000, 0x0000FF, 0.5f) == 0x7F007F, "mixed channel directions");
   check(ColorMath::mix24(0x123456, 0xFEDCBA, -1) == 0x123456, "clamped start");
   check(ColorMath::mix24(0xFEDCBA, 0x123456, 2) == 0x123456, "clamped end");
+  char shortName[5];
+  Utf8::copy(shortName, sizeof(shortName), "苏州");
+  check(strcmp(shortName, "苏") == 0, "UTF-8 capacity never cuts a Han character");
+  char byteLimited[12];
+  Utf8::copy(byteLimited, sizeof(byteLimited), "克孜勒苏", 7);
+  check(strcmp(byteLimited, "克孜") == 0,
+        "UTF-8 byte limit never cuts a Han character");
+  const LunarDate endTenth = Lunar::fromSolar(2048, 12, 4);
+  check(endTenth.valid && endTenth.year == 2048 && endTenth.month == 10 &&
+        endTenth.day == 29, "HKO 2048 tenth month is 29 days");
+  const LunarDate startEleventh = Lunar::fromSolar(2048, 12, 5);
+  check(startEleventh.valid && startEleventh.year == 2048 &&
+        startEleventh.month == 11 && startEleventh.day == 1,
+        "HKO 2048 eleventh month starts Dec 5");
+  const LunarDate startTwelfth = Lunar::fromSolar(2049, 1, 4);
+  check(startTwelfth.valid && startTwelfth.year == 2048 &&
+        startTwelfth.month == 12 && startTwelfth.day == 1,
+        "HKO 2048 twelfth month starts Jan 4");
   for (int a = 0; a < 256; a += 17) for (int b = 0; b < 256; b += 17) {
     for (int k = 0; k <= 16; ++k) {
       const int expected = (int)(a + (b - a) * (k / 16.0f));

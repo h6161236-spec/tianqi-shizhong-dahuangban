@@ -10,7 +10,7 @@
  *     层自己排帧重绘)+ 皮卡丘动画时钟
  *   - BLE:Nordic UART Service。手机端推 META/LRC/PLAY/SPEC/POS 行协议;
  *     Android 按协商 MTU 拆包,所以在字节层跨回调累计到换行再解析。
- *     按钮回发 BTN|play/pause/next/prev。数据只写 g_media,不做任何绘制。
+ *     按钮回发 BTN|play/pause/next/prev。回调写受保护邮箱,主循环合并媒体状态。
  *   - 触摸:XPT2046 位翻转驱动(SPI mode 0,独立 GPIO 不占 VSPI)+
  *     五点二维仿射校准(NVS 持久,带版本号;参数或算法升级自动重校准)
  *
@@ -23,6 +23,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <math.h>
+#include <stdlib.h>
 
 #ifndef DEMO_MODE
 #include <NimBLEDevice.h>
@@ -37,6 +38,8 @@
 #include "touch.h"
 #include "wifi_config.h"
 #include "wx.h"
+#include "weather_schedule.h"
+#include "utf8_copy.h"
 
 // =====================================================================
 //  屏幕 / 背光
@@ -599,53 +602,125 @@ static char g_bleRxBuf[512] = {};
 static size_t g_bleRxLen = 0;
 static bool g_bleRxOverflow = false;
 
+struct BleMailbox {
+  bool connectionChanged, connected;
+  bool metaChanged, lyricChanged, playChanged, specChanged, posChanged;
+  char title[sizeof(g_media.title)], artist[sizeof(g_media.artist)];
+  char lyric[sizeof(g_media.lyric)];
+  bool playing;
+  uint32_t playMs;
+  uint8_t spec[SPEC_BANDS];
+  int32_t pos, dur;
+  bool hasDur;
+};
+static BleMailbox g_bleMailbox = {};
+static portMUX_TYPE g_bleMux = portMUX_INITIALIZER_UNLOCKED;
+
 static NimBLECharacteristic* g_notifyChar = nullptr;
 static NimBLEServer* g_srv = nullptr;
 static uint16_t g_connHandle = 0xFFFF;
 
-/** 一行协议 → g_media。只写数据,不触发任何绘制(音乐页自己 100ms 刷) */
+/** BLE 任务只提交最新字段,主循环合并到 g_media 并触发页面刷新。 */
 static void parseBleLine(char* line) {
   if (strncmp(line, "META|", 5) == 0) {
     char* p = line + 5;
     char* br = strchr(p, '|');
     if (br) *br = 0;
-    strlcpy(g_media.title, p, sizeof(g_media.title));
-    strlcpy(g_media.artist, br ? br + 1 : "", sizeof(g_media.artist));
-    Serial.printf("[ble] meta: %s - %s\n", g_media.title, g_media.artist);
-    UI::notifyBtChanged();   // 歌名/歌手变了,音乐页文字区要重绘
+    portENTER_CRITICAL(&g_bleMux);
+    Utf8::copy(g_bleMailbox.title, sizeof(g_bleMailbox.title), p);
+    Utf8::copy(g_bleMailbox.artist, sizeof(g_bleMailbox.artist), br ? br + 1 : "");
+    g_bleMailbox.metaChanged = true;
+    portEXIT_CRITICAL(&g_bleMux);
   } else if (strncmp(line, "LRC|", 4) == 0) {
-    strlcpy(g_media.lyric, line + 4, sizeof(g_media.lyric));
-    UI::notifyBtChanged();   // 歌词行进到下一句,文字区要重绘
+    portENTER_CRITICAL(&g_bleMux);
+    Utf8::copy(g_bleMailbox.lyric, sizeof(g_bleMailbox.lyric), line + 4);
+    g_bleMailbox.lyricChanged = true;
+    portEXIT_CRITICAL(&g_bleMux);
   } else if (strncmp(line, "PLAY|", 5) == 0) {
     const bool np = line[5] == '1';
-    // PLAY|1 是每 3 秒一次的存活心跳;PLAY|0 只在状态变化时刷新。
-    if (np || np != g_media.playing) g_media.lastPlayMs = millis();
-    if (np != g_media.playing) {
-      g_media.playing = np;
-      UI::notifyBtChanged();   // 状态带「播放中/已暂停」要换
-    }
-    if (!np) memset(g_media.spec, 0, sizeof(g_media.spec));
+    portENTER_CRITICAL(&g_bleMux);
+    g_bleMailbox.playing = np;
+    g_bleMailbox.playMs = millis();
+    g_bleMailbox.playChanged = true;
+    portEXIT_CRITICAL(&g_bleMux);
   } else if (strncmp(line, "SPEC|", 5) == 0) {
     char* p = line + 5;
+    uint8_t spec[SPEC_BANDS] = {};
     for (int i = 0; i < SPEC_BANDS; ++i) {
       int v = atoi(p);
       if (v < 0) v = 0;
       if (v > 255) v = 255;
-      g_media.spec[i] = (uint8_t)v;
+      spec[i] = (uint8_t)v;
       p = strchr(p, ',');
       if (!p) break;
       ++p;
     }
+    portENTER_CRITICAL(&g_bleMux);
+    memcpy(g_bleMailbox.spec, spec, sizeof(spec));
+    g_bleMailbox.specChanged = true;
+    portEXIT_CRITICAL(&g_bleMux);
   } else if (strncmp(line, "POS|", 4) == 0) {
     // POS|cur|dur(dur 可缺省,缺省时沿用旧值)
     const int cur = atoi(line + 4);
     const char* sep = strchr(line + 4, '|');
-    if (cur >= 0) g_media.pos = cur;
-    if (sep) {
-      const int dur = atoi(sep + 1);
-      if (dur > 0) g_media.dur = dur;
-    }
+    if (cur < 0) return;
+    const int dur = sep ? atoi(sep + 1) : 0;
+    portENTER_CRITICAL(&g_bleMux);
+    g_bleMailbox.pos = cur;
+    g_bleMailbox.dur = dur;
+    g_bleMailbox.hasDur = dur > 0;
+    g_bleMailbox.posChanged = true;
+    portEXIT_CRITICAL(&g_bleMux);
   }
+}
+
+static void consumeBleMailbox() {
+  BleMailbox pending;
+  portENTER_CRITICAL(&g_bleMux);
+  pending = g_bleMailbox;
+  g_bleMailbox.connectionChanged = false;
+  g_bleMailbox.metaChanged = false;
+  g_bleMailbox.lyricChanged = false;
+  g_bleMailbox.playChanged = false;
+  g_bleMailbox.specChanged = false;
+  g_bleMailbox.posChanged = false;
+  portEXIT_CRITICAL(&g_bleMux);
+
+  bool dirty = false;
+  if (pending.connectionChanged) {
+    g_media.connected = pending.connected;
+    g_media.playing = false;
+    g_media.pos = pending.connected ? -1 : 0;
+    g_media.dur = 0;
+    g_media.lastPlayMs = 0;
+    memset(g_media.spec, 0, sizeof(g_media.spec));
+    g_media.title[0] = g_media.artist[0] = g_media.lyric[0] = 0;
+    strlcpy(g_media.peer, pending.connected ? "手机" : "", sizeof(g_media.peer));
+    dirty = true;
+  }
+  if (pending.metaChanged) {
+    Utf8::copy(g_media.title, sizeof(g_media.title), pending.title);
+    Utf8::copy(g_media.artist, sizeof(g_media.artist), pending.artist);
+    dirty = true;
+  }
+  if (pending.lyricChanged) {
+    Utf8::copy(g_media.lyric, sizeof(g_media.lyric), pending.lyric);
+    dirty = true;
+  }
+  if (pending.playChanged) {
+    dirty |= g_media.playing != pending.playing;
+    g_media.playing = pending.playing;
+    g_media.lastPlayMs = pending.playMs;
+    if (!pending.playing) memset(g_media.spec, 0, sizeof(g_media.spec));
+  }
+  if (pending.specChanged && g_media.playing)
+    memcpy(g_media.spec, pending.spec, sizeof(g_media.spec));
+  if (pending.posChanged) {
+    g_media.pos = pending.pos;
+    if (pending.hasDur) g_media.dur = pending.dur;
+    dirty = true;
+  }
+  if (dirty) UI::notifyBtChanged();
 }
 
 class ChrCb : public NimBLECharacteristicCallbacks {
@@ -679,35 +754,24 @@ class SrvCb : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
     g_bleRxLen = 0;
     g_bleRxOverflow = false;
+    portENTER_CRITICAL(&g_bleMux);
     g_connHandle = info.getConnHandle();
-    // 上一台的歌名/歌词/频谱不能漏给新连接
-    g_media.connected = true;
-    g_media.playing = false;
-    g_media.pos = -1;
-    g_media.dur = 0;
-    memset(g_media.spec, 0, sizeof(g_media.spec));
-    g_media.title[0] = 0;
-    g_media.artist[0] = 0;
-    g_media.lyric[0] = 0;
-    strlcpy(g_media.peer, "手机", sizeof(g_media.peer));
-    UI::notifyBtChanged();
+    g_bleMailbox = BleMailbox{};
+    g_bleMailbox.connectionChanged = true;
+    g_bleMailbox.connected = true;
+    portEXIT_CRITICAL(&g_bleMux);
     Serial.println("[ble] connected");
     (void)srv;
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     g_bleRxLen = 0;
     g_bleRxOverflow = false;
+    portENTER_CRITICAL(&g_bleMux);
     g_connHandle = 0xFFFF;
-    g_media.connected = false;
-    g_media.playing = false;
-    g_media.pos = 0;
-    g_media.dur = 0;
-    memset(g_media.spec, 0, sizeof(g_media.spec));
-    g_media.title[0] = 0;
-    g_media.artist[0] = 0;
-    g_media.lyric[0] = 0;
-    g_media.peer[0] = 0;
-    UI::notifyBtChanged();
+    g_bleMailbox = BleMailbox{};
+    g_bleMailbox.connectionChanged = true;
+    g_bleMailbox.connected = false;
+    portEXIT_CRITICAL(&g_bleMux);
     // 用户主动关广播时不趁断线偷偷恢复广播
     if (g_media.advOn) NimBLEDevice::startAdvertising();
     Serial.println("[ble] disconnected");
@@ -749,8 +813,11 @@ bool bleSendBtn(const char* btn) {
 }
 
 void bleDisconnectPeer() {
-  if (g_srv && g_media.connected && g_connHandle != 0xFFFF) {
-    g_srv->disconnect(g_connHandle);   // 收尾在 onDisconnect 回调里
+  portENTER_CRITICAL(&g_bleMux);
+  const uint16_t handle = g_connHandle;
+  portEXIT_CRITICAL(&g_bleMux);
+  if (g_srv && handle != 0xFFFF) {
+    g_srv->disconnect(handle);   // 收尾在 onDisconnect 回调里
   }
 }
 
@@ -785,11 +852,16 @@ void bleSetAdv(bool) {}
 //  WiFi / SNTP / 天气调度
 // =====================================================================
 static bool s_wifiUp = false;
-static uint32_t s_wifiUpMs = 0;
-static uint32_t s_lastWxMs = 0;
+static WeatherSchedule::State s_wxSchedule;
+static bool s_relocateRequested = false;
 static bool s_sntpStarted = false;
 static bool s_timeOk = false;
 static bool s_locatedThisUp = false;
+
+void requestWeatherRefresh(bool relocate) {
+  s_wxSchedule.request();
+  s_relocateRequested |= relocate;
+}
 
 static void sntpStart() {
   char tz[16];
@@ -800,33 +872,42 @@ static void sntpStart() {
 }
 
 /**
- * 拉一次天气。阻塞最多 ~16s(HTTP + 解析);每 30 分钟一次,期间
- * 动画会顿一下 —— 和参考工程同样的取舍(不做异步客户端省一大块代码)。
- * 拉不到且当前还是演示数据时,让演示数据漂移一点,像真的刷过。
+ * 拉一次天气。阻塞最多 ~16s(HTTP + 解析);联网调度统一由 loop 管理。
  */
 static void weatherFetch() {
   if (!WifiMgr::isConnected()) return;
-  // 自动模式:每次重新连上网先认一次城市,之后 30 分钟一轮只拉天气不再定位
-  if (Wx::isAuto() && !s_locatedThisUp) {
-    s_locatedThisUp = true;
+  bool locationPending = false;
+  // 定位失败仍可用当前地点拉天气,下次重试定位。
+  if (Wx::isAuto() && (!s_locatedThisUp || s_relocateRequested)) {
     if (Wx::locate()) {
+      s_locatedThisUp = true;
+      s_relocateRequested = false;
       Serial.printf("[loc] %s %.2f %.2f\n", Wx::place().name, Wx::place().lat,
                     Wx::place().lon);
-      char msg[40];
+      char msg[64];
       snprintf(msg, sizeof(msg), "定位到 %s", Wx::place().name);
       UI::toast(msg);
     } else {
+      locationPending = true;
       Serial.println("[loc] ip-api failed, keep current city");
     }
   }
   if (Wx::fetch()) {
     UI::markDirty();
+    if (locationPending) {
+      const uint32_t retryMs = s_wxSchedule.failure(millis());
+      Serial.printf("[loc] retry in %lu ms\n", (unsigned long)retryMs);
+    } else {
+      s_wxSchedule.success(millis());
+    }
     Serial.println("[wx] fetched");
-  } else if (Wx::data().demo) {
-    Wx::refreshDemo();
+  } else {
+    const uint32_t retryMs = s_wxSchedule.failure(millis());
+    UI::toast("天气刷新失败,继续用缓存");
     UI::markDirty();
+    Serial.printf("[wx] fetch failed, retry in %lu ms\n",
+                  (unsigned long)retryMs);
   }
-  s_lastWxMs = millis();
 }
 
 // =====================================================================
@@ -836,6 +917,10 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("\n=== 皮卡丘天气钟 boot ===");
+
+  // RTC can retain valid time across an offline reboot; local dates still need CST.
+  setenv("TZ", "CST-8", 1);
+  tzset();
 
   // ---- 屏幕 ----
   tft.init();
@@ -921,7 +1006,7 @@ void loop() {
   const bool up = WifiMgr::isConnected();
   if (up != s_wifiUp) {
     s_wifiUp = up;
-    s_wifiUpMs = up ? now : 0;
+    s_wxSchedule.onConnection(up, now);
     UI::markDirty();   // 状态条 wifi 图标变色
     if (up) {
       s_locatedThisUp = false;
@@ -932,13 +1017,15 @@ void loop() {
     }
   }
 
-  // ---- 天气:连上 1.5s 后首拉(等「连接中」弹窗转完),此后 30 分钟一轮 ----
-  if (s_wifiUp) {
-    const bool firstFetch = s_lastWxMs == 0 && now - s_wifiUpMs > 1500;
-    const bool periodic =
-        s_lastWxMs != 0 && now - s_lastWxMs > WEATHER_PERIOD_MS;
-    if (firstFetch || periodic) weatherFetch();
+  // ---- 天气:连上 1.5s 后首拉,成功 30 分钟周期,失败退避重试 ----
+  if (s_wxSchedule.due(now)) {
+    s_wxSchedule.started();
+    weatherFetch();
   }
+
+#ifndef DEMO_MODE
+  consumeBleMailbox();
+#endif
 
   // ---- 时间同步完成的瞬间刷一次(时钟页「时间未同步」→真时间) ----
   if (!s_timeOk && time(nullptr) > 1000000000L) {

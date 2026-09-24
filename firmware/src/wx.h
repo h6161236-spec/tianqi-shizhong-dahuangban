@@ -4,10 +4,10 @@
  *  wx.h —— 天气数据:拉取 / 演示 / NVS 缓存 / 离线角标 / 定位
  * =====================================================================
  *  策略(与网页预览一致):
- *   - 未配网:演示数据,角标「未配网 · 演示数据」,点了去设置页配网
+ *   - 未配网且无可信缓存:演示数据,角标注明;点角标去设置页配网
  *   - 在线:HTTP 拉 open-meteo 7 天预报(不用 TLS,剩余堆跑不动握手),
  *     每 30 分钟刷一次,拉到就写 NVS —— 重启后断网也有数据
- *   - 断网:继续用缓存,角标「离线 · X分钟前更新」;时钟照走(板载 RTC)
+ *   - 断网:仅显示地点匹配的 v2 缓存;无匹配数据时显示空状态
  *   - 定位:默认自动。WiFi 连上后用 ip-api(HTTP,中文)认城市,设置里可
  *     改成手选并钉死;自动模式下每次重新连网都会再认一次(带着走)。
  */
@@ -29,7 +29,8 @@ struct Data {
   bool valid;      // 有任何数据(缓存或演示)
   bool demo;       // 是演示数据
   int32_t fetchedAt;  // 拉取时刻 epoch;0 = 时钟还没同步过
-  char city[20];
+  char city[48];
+  float lat, lon;  // v2 cache ownership; never relabel another place's data
   int16_t wmo;     // 当前天气代码
   int16_t temp;    // 当前温度 °C
   int16_t feels;   // 体感 °C
@@ -41,20 +42,21 @@ struct Data {
 
 /** 当前使用的地点(自动定位或手选钉死) */
 struct Place {
-  char name[20];
+  char name[48];
   float lat, lon;
   bool autoMode;   // true = 连网后用 IP 再认一次
 };
 
-/** 上电调用:读 NVS 缓存;没有缓存且未配网则填演示数据 */
+/** 上电调用:只读取归属明确的 v2 缓存;未配网且无缓存时填演示数据 */
 void init();
 
 /** 在线时拉取(open-meteo,阻塞最多 ~15s)。成功返回 true 并写 NVS */
 bool fetch();
 
-/** 演示数据轻微漂移(像真的重新拉了一次) */
+/** 仅供主动演示模式使用;网络失败不会调用 */
 void refreshDemo();
 
+/** 当前地点的快照;地点不匹配时返回 valid=false,并隐藏已过期的预报日 */
 const Data& data();
 
 const Place& place();
@@ -74,8 +76,7 @@ bool locate();
 const char* wmoText(int wmo);
 
 /**
- * 离线/未配网角标文案。在线返回 nullptr(不画)。
- * unconfig → "未配网 · 演示数据";offline → "离线 · X分钟前更新"
+ * 离线/未配网/失败/过期角标文案。在线且数据新鲜时返回 nullptr。
  */
 const char* badgeText(char* buf, size_t n);
 

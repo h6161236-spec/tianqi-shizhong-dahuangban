@@ -84,7 +84,9 @@ js += `
                   for (const t of TUFTS) { t.x -= PK_SPD * dt; if (t.x < -8) { t.x += 336; t.h = 2 + Math.round(rng()*2); } }
                 }
                 if (S.pkJump !== null) { S.pkJump += dt / .55; if (S.pkJump >= 1) S.pkJump = null; } },
-  HITS: () => HITS, txtMarquee,
+  HITS: () => HITS, hitAt, txtMarquee, pinCity, shownWeather, weather: () => WX,
+  dayLabel, validForecast, apiRefresh, netBadge, keyboardRows, keyboardLimit, solarToLunar,
+  connectDone,
 };
 `;
 
@@ -120,6 +122,14 @@ for (const v of variants) {
   catch (e) { fail(`music variant ${JSON.stringify(v)}`, e); }
 }
 T.S.btState = 'con'; T.S.playing = true;
+try {
+  T.S.mediaReady = false;
+  drawnText.length = 0;
+  T.S.page = 1; T.drawFrame();
+  if (!drawnText.some(args => args[0] === '等待手机媒体信息'))
+    throw new Error('connected state without metadata showed demo song');
+} catch (e) { fail('BLE waiting state', e); }
+T.S.mediaReady = true;
 
 /* ---- 2b. long lyrics pause at the start, then move left ---- */
 try {
@@ -196,6 +206,89 @@ try {
 } catch (e) { fail('city picker', e); }
 T.S.modal = null;
 
+/* ---- 5c. selected place, dates, API validation, and WiFi controls ---- */
+try {
+  const priorCity = { ...T.S.city }, priorMode = T.S.cityMode;
+  const priorNet = T.S.net, priorRefreshFailed = T.S.refreshFailed;
+  const priorSnapshot = T.weather();
+  T.pinCity({ name: '杭州', lat: 30.25, lon: 120.17 });
+  if (T.shownWeather() !== null || T.weather() !== priorSnapshot || T.weather().city === '杭州')
+    throw new Error('city switch reused another place\'s weather');
+  T.S.net = 'offline';
+  if (T.netBadge().text !== '离线-暂无数据')
+    throw new Error('empty weather state lost offline reason');
+  T.S.net = 'online'; T.S.refreshFailed = true;
+  if (T.netBadge().text !== '刷新失败-暂无数据')
+    throw new Error('empty weather state lost refresh failure reason');
+  T.S.refreshFailed = false;
+  drawnText.length = 0;
+  T.S.page = 2; T.drawFrame();
+  if (!drawnText.some(args => args[0] === '暂无天气数据'))
+    throw new Error('missing empty weather state');
+  T.S.city = priorCity; T.S.cityMode = priorMode;
+  if (T.weather().demo) {
+    T.S.city = { name: T.weather().city, lat: T.weather().lat, lon: T.weather().lon };
+    T.S.net = 'online'; T.S.refreshFailed = true;
+    if (T.netBadge().text !== '刷新失败-演示数据')
+      throw new Error('failed demo refresh mislabeled as cached data');
+  }
+  T.S.city = priorCity;
+  T.S.net = priorNet; T.S.refreshFailed = priorRefreshFailed;
+
+  const ref = new Date('2026-09-24T23:59:00');
+  if (T.dayLabel('2026-09-25', ref) !== '明天' ||
+      T.dayLabel('2026-09-25', new Date('2026-09-25T00:01:00')) !== '今天')
+    throw new Error('day label did not cross midnight');
+  const dailyDates = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(2026, 8, 24 + i);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const good = {
+    current: { time: '2026-09-24T12:00', weather_code: 2, temperature_2m: 25, apparent_temperature: 26,
+      relative_humidity_2m: 60, wind_speed_10m: 8 },
+    daily: { time: dailyDates, weather_code: Array(7).fill(2),
+      temperature_2m_max: Array(7).fill(30), temperature_2m_min: Array(7).fill(20) },
+    hourly: { time: ['2026-09-24T12:00'], weather_code: [2], temperature_2m: [25] },
+  };
+  if (!T.validForecast(good) || T.validForecast({ ...good, daily: { ...good.daily, temperature_2m_min: [] } }))
+    throw new Error('API field validation failed');
+
+  const chars = new Set();
+  for (const mode of [0, 1, 2]) for (const shift of [false, true])
+    for (const row of T.keyboardRows({ kbMode: mode, kbShift: shift }))
+      for (const ch of row) chars.add(ch);
+  chars.add(' ');
+  for (let i = 32; i <= 126; i++) if (!chars.has(String.fromCharCode(i)))
+    throw new Error(`missing ASCII key ${String.fromCharCode(i)}`);
+  if (T.keyboardLimit({ kbWhy: 0 }) !== 64) throw new Error('WiFi password limit');
+
+  T.openModal('wifi'); T.drawFrame();
+  if (T.hitAt(190, 200)?.id !== 'x.w.refresh' || T.hitAt(270, 200)?.id !== 'x.w.cancel')
+    throw new Error('WiFi buttons are not reachable by touch');
+  T.doAct(T.hitAt(120, 200).id); T.drawFrame();
+  if (!T.HITS().some(h => h.id === 'w.net.6')) throw new Error('second scan page unavailable');
+  T.doAct(T.hitAt(190, 200).id);
+  if (T.S.modal.scanState !== 'running') throw new Error('rescan did not start');
+  T.doAct(T.hitAt(270, 200).id);
+  if (T.S.modal !== null) throw new Error('WiFi cancel did not close');
+  const savedSsid = T.S.wifiSsid;
+  T.S.modal = { kind: 'connecting', ssid: 'Wrong-Network', pass: 'wrong', connT: 0 };
+  T.connectDone();
+  if (T.S.wifiSsid !== savedSsid || T.S.modal?.kind !== 'kb')
+    throw new Error('wrong password changed saved network');
+} catch (e) { fail('weather and WiFi behavior', e); }
+T.S.modal = null;
+
+try {
+  for (const [y, m, d, month] of [
+    [2048, 11, 6, 10], [2048, 12, 5, 11], [2049, 1, 4, 12],
+  ]) {
+    const lunar = T.solarToLunar(y, m, d);
+    if (!lunar || lunar.y !== 2048 || lunar.m !== month || lunar.d !== 1)
+      throw new Error(`${y}-${m}-${d} should start lunar month ${month}`);
+  }
+} catch (e) { fail('2048 HKO lunar months', e); }
+
 /* ---- 6. long run: pikachu travel wrap-around, dust pool, spectrum decay ---- */
 T.S.page = 0; T.S.pkJump = 0;
 for (let i = 0; i < 3000; i++) {
@@ -203,5 +296,14 @@ for (let i = 0; i < 3000; i++) {
   catch (e) { fail(`long run frame ${i}`, e); break; }
 }
 
-if (fails) { console.error(`\n${fails} failure(s)`); process.exit(1); }
-console.log('smoke OK: all pages, variants, actions, gestures and a 50s run passed');
+(async () => {
+  try {
+    const before = T.weather();
+    T.S.refetchBusy = false;
+    sandbox.fetch = async () => ({ ok: true, json: async () => ({ current: {} }) });
+    if (await T.apiRefresh() !== false || T.weather() !== before || !T.S.refreshFailed)
+      throw new Error('incomplete API response replaced snapshot');
+  } catch (e) { fail('API failure preserves snapshot', e); }
+  if (fails) { console.error(`\n${fails} failure(s)`); process.exit(1); }
+  console.log('smoke OK: all pages, variants, actions, gestures and a 50s run passed');
+})().catch(e => { console.error(e); process.exit(1); });

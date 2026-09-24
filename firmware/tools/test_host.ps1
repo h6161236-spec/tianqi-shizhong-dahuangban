@@ -10,7 +10,7 @@ $build = Join-Path $fw '.pio\host-tests'
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 Push-Location $build
 try {
-    $command = 'call "{0}" >nul && cl /nologo /utf-8 /D_CRT_SECURE_NO_WARNINGS /EHsc /std:c++14 /I"{1}\tests\host" /I"{1}\src" "{1}\tests\host\regression.cpp" "{1}\src\touch.cpp" /Fe:regression.exe && regression.exe' -f $vcvars, $fw
+    $command = 'call "{0}" >nul && cl /nologo /utf-8 /D_CRT_SECURE_NO_WARNINGS /EHsc /std:c++14 /I"{1}\tests\host" /I"{1}\src" "{1}\tests\host\regression.cpp" "{1}\src\touch.cpp" "{1}\src\lunar.cpp" /Fe:regression.exe && regression.exe' -f $vcvars, $fw
     & cmd.exe /d /s /c $command
     if ($LASTEXITCODE -ne 0) { throw 'Host regression failed' }
 } finally { Pop-Location }

@@ -5,7 +5,7 @@
  * =====================================================================
  *  与 preview/ui.html 的 drawScene 逐条对应:
  *   - 天空:11 个时间关键帧(深夜→黎明→日出→正午→日落→黄昏)竖向插值,
- *     每条 2px 横带直接画屏;阴天/雾/雷暴/冻雨再调色
+ *     2px 色带在 320x28 离屏条带中合成;阴天/雾/雷暴/冻雨再调色
  *   - 天体:白天太阳 6→18 走弧(早晚偏橙),夜里月亮 + 26 颗固定种子
  *     闪烁星星;月相按农历日期(朔→望→朔)画月牙
  *   - 云:像素块造型 3 条高度带随风漂移;雷暴随机闪电(整屏闪 + 电弧)
@@ -14,7 +14,8 @@
  *     冻雨地面冰晶闪光
  *   - 皮卡丘固定在 (130,140) 奔跑,影子随跳跃缩放
  *
- *  动的层(云/草/皮卡丘)离屏合成再一次推送,避免屏上「先擦后画」闪烁。
+ *  八条复用同一块 320x28 缓冲,完整合成背景和动层后推送。
+ *  动画状态每帧只推进一次,旧/新对象范围只决定哪些条带需要更新。
  *  所有 24bit 颜色在内部混合,落到屏幕前转 RGB565,和预览的量化顺序一致。
  */
 
@@ -66,10 +67,16 @@ float nightness(float hourF);
 void draw(TFT_eSPI& t, float hourF, Group g, float dt, float moonPh,
           bool withPika);
 
-/** 使缓存场景下次绘制完整重建背景。页面切换后必须调用。 */
+/** 使场景下次绘制完整重建。页面切换后必须调用。 */
 void invalidateCache();
 /** Toast 退出后仅恢复地面提示区，不触发整片天空重建。 */
 void restoreGroundOverlay();
+/**
+ * Clock page overlays already painted on the screen are excluded from strip
+ * transfers. Pass their current visibility before draw(); disappearing
+ * overlays are restored from the scene on that same frame.
+ */
+void setOverlayVisibility(bool networkBadge, bool toast);
 
 // ---- 给页面叠元素用的取样色(和当帧场景同一路调色,纯函数) ----
 
@@ -82,17 +89,16 @@ uint16_t statusVeil(float hourF, Group g);
 /** 地面色(泥土区,网络角标的底色取样) */
 uint16_t groundColor(float hourF, Group g);
 
-// ---- 五页共用的像素草地页脚(时钟页除外:它的地面是场景的一部分) ----
+// ---- 其他四页的淡蓝导航区(时钟页地面由场景绘制) ----
 
 /** 页脚高度,同预览 FOOT_H */
-constexpr int FOOT_H = 26;
-/** 页脚顶边 y,同预览 FOOT_Y = 240-26 */
+constexpr int FOOT_H = 16;
+/** 页脚顶边 y,同预览 FOOT_Y = 240-16 */
 constexpr int FOOT_TOP = 240 - FOOT_H;
 
 /**
- * 画共用页脚:底色→草地的 8px 浅色过渡 + 草皮 + 草丛。
- * 草丛不滚动(皮卡丘只在时钟页跑,其它页地面是静止装饰)。
- * @param bg 页面底色(过渡的起点,通常 TH::BG)
+ * 绘制淡蓝导航区。
+ * @param bg 页面底色(保留现有调用接口)
  */
 void footer(TFT_eSPI& t, uint16_t bg);
 

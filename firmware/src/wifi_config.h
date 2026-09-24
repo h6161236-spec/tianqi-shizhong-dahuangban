@@ -44,6 +44,13 @@ enum WifiScanState : uint8_t {
   WIFI_MGR_SCAN_ERROR,
 };
 
+enum WifiProvisionResult : uint8_t {
+  WIFI_PROVISION_IDLE,
+  WIFI_PROVISION_CONNECTING,
+  WIFI_PROVISION_SUCCESS,
+  WIFI_PROVISION_FAILED,
+};
+
 namespace WifiMgr {
 
 // 初始化(从NVS读取已保存的配置)
@@ -66,6 +73,10 @@ int getScanResults(WiFiAP* results, int maxCount);
 
 // 连接到指定WiFi
 void connect(const char* ssid, const char* password);
+
+// User-entered credentials are committed only after the requested SSID connects.
+void beginProvision(const char* ssid, const char* password);
+WifiProvisionResult provisionResult();
 
 // 保存配置到NVS
 bool saveConfig(const char* ssid, const char* password);

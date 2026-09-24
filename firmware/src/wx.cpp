@@ -13,10 +13,13 @@
 #include <WiFi.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 
 #include "cities.h"
 #include "config.h"
 #include "lunar.h"
+#include "utf8_copy.h"
 #include "wifi_config.h"
 
 namespace Wx {
@@ -25,9 +28,63 @@ namespace {
 Data g_wx = {};
 Place g_place = {};
 bool g_inited = false;
+bool g_refreshFailed = false;
+
+bool samePlace(const Data& data, const Place& place) {
+  return data.valid && strcmp(data.city, place.name) == 0 &&
+         fabsf(data.lat - place.lat) < 0.001f &&
+         fabsf(data.lon - place.lon) < 0.001f;
+}
+
+bool validCode(int code) {
+  switch (code) {
+    case 0: case 1: case 2: case 3: case 45: case 48:
+    case 51: case 53: case 55: case 56: case 57:
+    case 61: case 63: case 65: case 66: case 67:
+    case 71: case 73: case 75: case 77:
+    case 80: case 81: case 82: case 85: case 86:
+    case 95: case 96: case 99: return true;
+    default: return false;
+  }
+}
+
+bool finiteNumber(JsonVariantConst value) {
+  return (value.is<int>() || value.is<float>() || value.is<double>()) &&
+         isfinite(value.as<double>());
+}
+
+bool parseDate(const char* text, int32_t* out) {
+  if (!text || strlen(text) != 10 || text[4] != '-' || text[7] != '-') return false;
+  for (int i = 0; i < 10; ++i)
+    if (i != 4 && i != 7 && !isdigit((uint8_t)text[i])) return false;
+  int y = 0, m = 0, d = 0;
+  if (sscanf(text, "%4d-%2d-%2d", &y, &m, &d) != 3 ||
+      y < 1970 || y > 2099 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+  struct tm day = {};
+  day.tm_year = y - 1900;
+  day.tm_mon = m - 1;
+  day.tm_mday = d;
+  day.tm_hour = 12;
+  const time_t when = mktime(&day);
+  if (when < 0 || day.tm_year != y - 1900 || day.tm_mon != m - 1 ||
+      day.tm_mday != d) return false;
+  *out = (int32_t)when;
+  return true;
+}
+
+int dateOffset(int32_t date) {
+  time_t now = time(nullptr);
+  if (now < 1000000000L) return 0;
+  struct tm today;
+  localtime_r(&now, &today);
+  today.tm_hour = 12;
+  today.tm_min = today.tm_sec = 0;
+  const time_t noon = mktime(&today);
+  return (int)lround(difftime((time_t)date, noon) / 86400.0);
+}
 
 void defaultPlace() {
-  strlcpy(g_place.name, CFG_CITY_NAME, sizeof(g_place.name));
+  Utf8::copy(g_place.name, sizeof(g_place.name), CFG_CITY_NAME);
   g_place.lat = (float)atof(CFG_LAT);
   g_place.lon = (float)atof(CFG_LON);
   g_place.autoMode = true;
@@ -54,7 +111,7 @@ void loadPlace() {
   p.end();
   if (n.isEmpty() || !isfinite(la) || !isfinite(lo)) return;
   if (la < -90.0f || la > 90.0f || lo < -180.0f || lo > 180.0f) return;
-  strlcpy(g_place.name, n.c_str(), sizeof(g_place.name));
+  Utf8::copy(g_place.name, sizeof(g_place.name), n.c_str());
   g_place.lat = la;
   g_place.lon = lo;
   g_place.autoMode = a != 0;
@@ -66,8 +123,10 @@ void makeDemo() {
   g_wx.valid = true;
   g_wx.demo = true;
   g_wx.fetchedAt = time(nullptr) > 1000000000L ? (int32_t)time(nullptr) : 0;
-  strncpy(g_wx.city, g_place.name[0] ? g_place.name : CFG_CITY_NAME,
-          sizeof(g_wx.city) - 1);
+  Utf8::copy(g_wx.city, sizeof(g_wx.city),
+           g_place.name[0] ? g_place.name : CFG_CITY_NAME);
+  g_wx.lat = g_place.lat;
+  g_wx.lon = g_place.lon;
   g_wx.wmo = 2;
   g_wx.temp = 26;
   g_wx.feels = 28;
@@ -96,8 +155,10 @@ void saveCache() {
   Preferences prefs;
   if (!prefs.begin(NVS_WX_NS, false)) return;
   JsonDocument doc;
-  doc["v"] = 1;
+  doc["v"] = 2;
   doc["city"] = g_wx.city;
+  doc["la"] = g_wx.lat;
+  doc["lo"] = g_wx.lon;
   doc["at"] = g_wx.fetchedAt;
   doc["wmo"] = g_wx.wmo;
   doc["t"] = g_wx.temp;
@@ -127,28 +188,46 @@ bool loadCache() {
 
   JsonDocument doc;
   if (deserializeJson(doc, s)) return false;
-  if ((doc["v"] | 0) != 1) return false;
+  if ((doc["v"] | 0) != 2) return false;
 
-  g_wx = Data{};
-  strlcpy(g_wx.city, doc["city"] | "", sizeof(g_wx.city));
-  g_wx.fetchedAt = doc["at"] | 0;
-  g_wx.wmo = doc["wmo"] | 0;
-  g_wx.temp = doc["t"] | 0;
-  g_wx.feels = doc["f"] | 0;
-  g_wx.hum = doc["h"] | 0;
-  strlcpy(g_wx.wind, doc["w"] | "", sizeof(g_wx.wind));
-  g_wx.dayN = 0;
-  for (JsonArray row : doc["d"].as<JsonArray>()) {
-    if (g_wx.dayN >= 7) break;
-    g_wx.days[g_wx.dayN].date = row[0] | 0;
-    g_wx.days[g_wx.dayN].wmo = row[1] | 0;
-    g_wx.days[g_wx.dayN].tmax = row[2] | 0;
-    g_wx.days[g_wx.dayN].tmin = row[3] | 0;
-    ++g_wx.dayN;
+  const char* city = doc["city"] | "";
+  const float lat = doc["la"] | NAN;
+  const float lon = doc["lo"] | NAN;
+  if (!city[0] || strlen(city) >= sizeof(g_wx.city) ||
+      !isfinite(lat) || !isfinite(lon) || lat < -90 || lat > 90 ||
+      lon < -180 || lon > 180 || !validCode(doc["wmo"] | -1) ||
+      !finiteNumber(doc["t"]) || !finiteNumber(doc["f"]) ||
+      !finiteNumber(doc["h"]) || (doc["h"].as<int>() < 0) ||
+      (doc["h"].as<int>() > 100)) return false;
+  JsonArray rows = doc["d"].as<JsonArray>();
+  if (rows.isNull() || rows.size() != 7) return false;
+
+  Data loaded = {};
+  Utf8::copy(loaded.city, sizeof(loaded.city), city);
+  loaded.lat = lat;
+  loaded.lon = lon;
+  loaded.fetchedAt = doc["at"] | 0;
+  loaded.wmo = doc["wmo"].as<int>();
+  loaded.temp = doc["t"].as<int>();
+  loaded.feels = doc["f"].as<int>();
+  loaded.hum = doc["h"].as<int>();
+  strlcpy(loaded.wind, doc["w"] | "", sizeof(loaded.wind));
+  if (!loaded.wind[0]) return false;
+  for (JsonArray row : rows) {
+    if (row.size() != 4 || !validCode(row[1] | -1) ||
+        !finiteNumber(row[2]) || !finiteNumber(row[3]) ||
+        row[2].as<int>() < row[3].as<int>()) return false;
+    Day& day = loaded.days[loaded.dayN++];
+    day.date = row[0] | 0;
+    day.wmo = row[1].as<int>();
+    day.tmax = row[2].as<int>();
+    day.tmin = row[3].as<int>();
+    if (day.date <= 0 || (loaded.dayN > 1 &&
+        day.date <= loaded.days[loaded.dayN - 2].date)) return false;
   }
-  g_wx.valid = g_wx.dayN > 0;
-  g_wx.demo = false;
-  return g_wx.valid;
+  loaded.valid = true;
+  g_wx = loaded;
+  return true;
 }
 
 }  // namespace
@@ -158,14 +237,21 @@ void init() {
   Cities::init();
   loadPlace();
   // 顺序:有缓存先用缓存(断网重启也有数);没缓存再上演示数据
-  if (!loadCache()) makeDemo();
-  if (g_wx.valid && g_place.name[0])
-    strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
+  if (!loadCache() && !WifiMgr::getConfig()->saved) makeDemo();
 }
 
 const Data& data() {
   if (!g_inited) init();
-  return g_wx;
+  static Data visible;
+  visible = Data{};
+  if (!samePlace(g_wx, g_place)) return visible;
+  visible = g_wx;
+  visible.dayN = 0;
+  for (int i = 0; i < g_wx.dayN; ++i) {
+    if (dateOffset(g_wx.days[i].date) >= 0)
+      visible.days[visible.dayN++] = g_wx.days[i];
+  }
+  return visible;
 }
 
 void reset() {
@@ -186,12 +272,11 @@ const Place& place() { return g_place; }
 bool isAuto() { return g_place.autoMode; }
 
 void setPlace(const char* name, float lat, float lon, bool pin) {
-  if (name && name[0]) strlcpy(g_place.name, name, sizeof(g_place.name));
+  if (name && name[0]) Utf8::copy(g_place.name, sizeof(g_place.name), name);
   g_place.lat = lat;
   g_place.lon = lon;
   g_place.autoMode = !pin;
   savePlace();
-  strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
 }
 
 bool locate() {
@@ -222,32 +307,33 @@ bool locate() {
 
   const float lat = doc["lat"] | NAN;
   const float lon = doc["lon"] | NAN;
-  if (!isfinite(lat) || !isfinite(lon)) return false;
+  if (!isfinite(lat) || !isfinite(lon) || lat < -90.0f || lat > 90.0f ||
+      lon < -180.0f || lon > 180.0f) return false;
 
   const char* city = doc["city"] | "";
   const char* region = doc["regionName"] | "";
   const char* use = (city && city[0]) ? city : region;
   if (!use || !use[0]) use = "当前位置";
 
-  // 能对上名录就用名录的标准名和坐标(open-meteo 更稳);对不上就用接口原值
+  // 名录仅标准化显示名;预测必须使用接口给出的实际坐标。
   const int idx = Cities::findLoose(use);
   if (idx >= 0) {
     const Cities::Rec& c = Cities::LIST[idx];
-    strlcpy(g_place.name, c.name, sizeof(g_place.name));
-    g_place.lat = c.lat;
-    g_place.lon = c.lon;
+    Utf8::copy(g_place.name, sizeof(g_place.name), c.name);
+    g_place.lat = lat;
+    g_place.lon = lon;
   } else {
-    strlcpy(g_place.name, use, sizeof(g_place.name));
+    Utf8::copy(g_place.name, sizeof(g_place.name), use);
     g_place.lat = lat;
     g_place.lon = lon;
   }
   g_place.autoMode = true;
   savePlace();
-  strlcpy(g_wx.city, g_place.name, sizeof(g_wx.city));
   return true;
 }
 
 bool fetch() {
+  g_refreshFailed = true;
   if (WiFi.status() != WL_CONNECTED) return false;
 
   // current + daily 7 天。不用 hourly —— 页面上没有逐时预报的位子。
@@ -276,46 +362,71 @@ bool fetch() {
   JsonDocument doc;
   if (deserializeJson(doc, body)) return false;
 
+  JsonObject current = doc["current"].as<JsonObject>();
+  JsonObject daily = doc["daily"].as<JsonObject>();
+  if (current.isNull() || daily.isNull() ||
+      !validCode(current["weather_code"] | -1) ||
+      !finiteNumber(current["temperature_2m"]) ||
+      !finiteNumber(current["apparent_temperature"]) ||
+      !finiteNumber(current["relative_humidity_2m"]) ||
+      !finiteNumber(current["wind_speed_10m"])) return false;
+  const char* currentTime = current["time"] | "";
+  if (strlen(currentTime) != 16 || currentTime[10] != 'T' ||
+      currentTime[13] != ':' || !isdigit((uint8_t)currentTime[11]) ||
+      !isdigit((uint8_t)currentTime[12]) ||
+      !isdigit((uint8_t)currentTime[14]) ||
+      !isdigit((uint8_t)currentTime[15])) return false;
+  char currentDay[11];
+  memcpy(currentDay, currentTime, 10);
+  currentDay[10] = 0;
+  int32_t currentDate = 0;
+  if (!parseDate(currentDay, &currentDate) ||
+      (currentTime[11] - '0') * 10 + currentTime[12] - '0' > 23 ||
+      (currentTime[14] - '0') * 10 + currentTime[15] - '0' > 59) return false;
+  const double temp = current["temperature_2m"].as<double>();
+  const double feels = current["apparent_temperature"].as<double>();
+  const double hum = current["relative_humidity_2m"].as<double>();
+  const double wind = current["wind_speed_10m"].as<double>();
+  if (temp < -100 || temp > 70 || feels < -100 || feels > 80 ||
+      hum < 0 || hum > 100 || wind < 0 || wind > 500) return false;
+  JsonArray times = daily["time"].as<JsonArray>();
+  JsonArray codes = daily["weather_code"].as<JsonArray>();
+  JsonArray tmaxs = daily["temperature_2m_max"].as<JsonArray>();
+  JsonArray tmins = daily["temperature_2m_min"].as<JsonArray>();
+  if (times.size() != 7 || codes.size() != 7 ||
+      tmaxs.size() != 7 || tmins.size() != 7) return false;
+
   Data nx = Data{};
   nx.valid = true;
   nx.demo = false;
   nx.fetchedAt = time(nullptr) > 1000000000L ? (int32_t)time(nullptr) : 0;
-  strlcpy(nx.city, g_place.name, sizeof(nx.city));
-  nx.wmo = doc["current"]["weather_code"] | 0;
-  nx.temp = (int)llroundf(doc["current"]["temperature_2m"] | 0.0f);
-  nx.feels = (int)llroundf(doc["current"]["apparent_temperature"] | 0.0f);
-  nx.hum = doc["current"]["relative_humidity_2m"] | 0;
-  snprintf(nx.wind, sizeof(nx.wind), "%d km/h",
-           (int)llroundf(doc["current"]["wind_speed_10m"] | 0.0f));
+  Utf8::copy(nx.city, sizeof(nx.city), g_place.name);
+  nx.lat = g_place.lat;
+  nx.lon = g_place.lon;
+  nx.wmo = current["weather_code"].as<int>();
+  nx.temp = (int)lround(temp);
+  nx.feels = (int)lround(feels);
+  nx.hum = (int)lround(hum);
+  snprintf(nx.wind, sizeof(nx.wind), "%d km/h", (int)lround(wind));
 
-  nx.dayN = 0;
-  JsonArray times = doc["daily"]["time"];
-  JsonArray codes = doc["daily"]["weather_code"];
-  JsonArray tmaxs = doc["daily"]["temperature_2m_max"];
-  JsonArray tmins = doc["daily"]["temperature_2m_min"];
-  nx.dayN = (int)times.size() < 7 ? (int)times.size() : 7;
-  for (int i = 0; i < nx.dayN; ++i) {
-    // "2026-09-05" → 当天本地正午 epoch
+  for (int i = 0; i < 7; ++i) {
     const char* ts = times[i] | "";
-    int y = 0, m = 0, d = 0;
-    if (sscanf(ts, "%d-%d-%d", &y, &m, &d) != 3 || y < 1970) {
-      nx.days[i].date = time(nullptr) + (time_t)i * 86400L;
-    } else {
-      struct tm tmv = {};
-      tmv.tm_year = y - 1900;
-      tmv.tm_mon = m - 1;
-      tmv.tm_mday = d;
-      tmv.tm_hour = 12;
-      nx.days[i].date = (int32_t)mktime(&tmv);
-    }
-    nx.days[i].wmo = codes[i] | 0;
-    nx.days[i].tmax = (int)llroundf(tmaxs[i] | 0.0f);
-    nx.days[i].tmin = (int)llroundf(tmins[i] | 0.0f);
+    Day& day = nx.days[nx.dayN];
+    if (!parseDate(ts, &day.date) || !validCode(codes[i] | -1) ||
+        !finiteNumber(tmaxs[i]) || !finiteNumber(tmins[i])) return false;
+    const double hi = tmaxs[i].as<double>();
+    const double lo = tmins[i].as<double>();
+    if (hi < lo || hi > 80 || lo < -100 ||
+        (i > 0 && day.date <= nx.days[i - 1].date)) return false;
+    day.wmo = codes[i].as<int>();
+    day.tmax = (int)lround(hi);
+    day.tmin = (int)lround(lo);
+    ++nx.dayN;
   }
-  if (nx.dayN == 0) return false;
 
   g_wx = nx;
   saveCache();
+  g_refreshFailed = false;
   return true;
 }
 
@@ -368,33 +479,65 @@ const char* wmoText(int w) {
     case 95: return "雷暴";
     case 96: return "雷暴冰雹";
     case 99: return "强雷暴";
-    default: return "—";
+    default: return "--";
   }
 }
 
 const char* badgeText(char* buf, size_t n) {
   const WiFiConfig* cfg = WifiMgr::getConfig();
+  if (!samePlace(g_wx, g_place)) {
+    if (WiFi.status() != WL_CONNECTED)
+      snprintf(buf, n, cfg && !cfg->saved ? "未配网-暂无数据" : "离线-暂无数据");
+    else
+      snprintf(buf, n, g_refreshFailed ? "刷新失败-暂无数据" : "暂无天气数据");
+    return buf;
+  }
   if (cfg && !cfg->saved && !cfg->connected) {
-    snprintf(buf, n, "未配网 · 演示数据");
+    snprintf(buf, n, g_wx.demo ? "未配网-演示数据" : "未配网-缓存数据");
     return buf;
   }
   if (WiFi.status() != WL_CONNECTED) {
+    if (g_wx.demo) {
+      snprintf(buf, n, "离线-演示数据");
+      return buf;
+    }
     if (g_wx.fetchedAt > 0) {
       const long mins = (time(nullptr) - g_wx.fetchedAt) / 60L;
-      snprintf(buf, n, "离线 · %ld分钟前更新", mins < 0 ? 0L : mins);
+      snprintf(buf, n, "离线-%ld分钟前更新", mins < 0 ? 0L : mins);
     } else {
-      snprintf(buf, n, "离线 · 暂无更新");
+      snprintf(buf, n, "离线-暂无更新");
     }
     return buf;
   }
-  return nullptr;  // 在线,不画
+  if (g_refreshFailed) {
+    snprintf(buf, n, g_wx.demo ? "刷新失败-演示数据" : "刷新失败-使用缓存");
+    return buf;
+  }
+  if (g_wx.demo) {
+    snprintf(buf, n, "演示数据");
+    return buf;
+  }
+  if (g_wx.fetchedAt <= 0) {
+    snprintf(buf, n, "更新时间未知");
+    return buf;
+  }
+  if (g_wx.fetchedAt > 0 && time(nullptr) - g_wx.fetchedAt > WEATHER_PERIOD_MS / 1000) {
+    snprintf(buf, n, "天气已过期");
+    return buf;
+  }
+  return nullptr;
 }
 
 const char* dayLabel(int i) {
-  if (i < 0 || i >= g_wx.dayN) return "?";
-  if (i == 0) return "今天";
-  if (i == 1) return "明天";
-  time_t t = (time_t)g_wx.days[i].date;
+  const Data& shown = data();
+  if (i < 0 || i >= shown.dayN) return "?";
+  if (time(nullptr) >= 1000000000L) {
+    const int offset = dateOffset(shown.days[i].date);
+    if (offset < 0) return "过期";
+    if (offset == 0) return "今天";
+    if (offset == 1) return "明天";
+  }
+  time_t t = (time_t)shown.days[i].date;
   struct tm lt;
   localtime_r(&t, &lt);
   return Lunar::weekName(lt.tm_wday);   // "周一"…"周日"

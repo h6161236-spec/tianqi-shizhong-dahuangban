@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "theme.h"
+#include "utf8_copy.h"
 
 namespace {
 
@@ -47,10 +48,7 @@ inline size_t charBytes(uint8_t c) {
 }
 
 inline void copyStr(char* out, size_t outSize, const char* src, size_t n) {
-  if (!outSize) return;
-  if (n >= outSize) n = outSize - 1;
-  memcpy(out, src, n);
-  out[n] = 0;
+  Utf8::copy(out, outSize, src, n);
 }
 
 }  // namespace

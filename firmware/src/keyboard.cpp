@@ -21,7 +21,7 @@ static const char* KB_KEYS_LOWER[] = {
   "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
   "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
   "a", "s", "d", "f", "g", "h", "j", "k", "l", "←",
-  "⇧", "z", "x", "c", "v", "b", "n", "m", "_", "."
+  "⇧", "z", "x", "c", "v", "b", "n", "m", " ", "."
 };
 
 static const char* KB_KEYS_UPPER[] = {
@@ -33,15 +33,16 @@ static const char* KB_KEYS_UPPER[] = {
 
 static const char* KB_KEYS_NUMBER[] = {
   "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-  "~", "`", "!", "@", "#", "$", "%", "^", "&", "*",
+  "~", "`", "<", ">", "\\", "$", "}", "^", "&", "*",
   "(", ")", "-", "_", "=", "+", "[", "]", "{", "←",
   "⇧", ";", ":", "'", "\"", ",", ".", "/", "?", "|"
 };
 
 static bool g_active = false;
 static char g_input[KB_MAX_INPUT];
-static char g_prompt[32];
+static char g_prompt[64];
 static KeyboardLayout g_layout = KB_LOWERCASE;
+static uint8_t g_maxChars = KB_MAX_INPUT - 1;
 
 // 键盘布局: 4行x10列
 static const int KB_COLS = 10;
@@ -60,12 +61,12 @@ void init() {
   g_prompt[0] = 0;
 }
 
-void startInput(const char* prompt, const char* initialValue) {
+void startInput(const char* prompt, const char* initialValue, uint8_t maxChars) {
   g_active = true;
   g_layout = KB_LOWERCASE;
-  strncpy(g_prompt, prompt, sizeof(g_prompt) - 1);
-  strncpy(g_input, initialValue, sizeof(g_input) - 1);
-  g_input[KB_MAX_INPUT - 1] = 0;
+  g_maxChars = maxChars < KB_MAX_INPUT ? maxChars : KB_MAX_INPUT - 1;
+  strlcpy(g_prompt, prompt ? prompt : "", sizeof(g_prompt));
+  strlcpy(g_input, initialValue ? initialValue : "", g_maxChars + 1);
 }
 
 void endInput() {
@@ -102,14 +103,11 @@ void render() {
   Gfx::cardRim(tft, 8, 40, 304, 36, 7, TH::CARD, TH::CYAN, TH::BG);
 
   // 显示当前输入(截断显示)
-  char displayText[48];
-  int inputLen = strlen(g_input);
-  if (inputLen > 30) {
-    snprintf(displayText, sizeof(displayText), "...%s", g_input + inputLen - 27);
-  } else {
-    strncpy(displayText, g_input, sizeof(displayText) - 1);
-    displayText[sizeof(displayText) - 1] = 0;
-  }
+  char displayText[KB_MAX_INPUT + 4];
+  snprintf(displayText, sizeof(displayText), "%s", g_input);
+  const int inputLen = strlen(g_input);
+  for (int start = 0; Txt::width(CN16, displayText) > 268 && start < inputLen; ++start)
+    snprintf(displayText, sizeof(displayText), "...%s", g_input + start + 1);
   Txt::draw(16, 64, CN16, TH::TXT, displayText);
 
   // 光标
@@ -148,9 +146,11 @@ void render() {
       Gfx::cardRim(tft, x, y, keyW, KB_KEY_H, 5, keyColor, TH::RIM, TH::BG);
 
       // 按键文字居中
-      int textW = Txt::width(CN12, key);
+      const char* caption = strcmp(key, " ") == 0 ? "空格"
+                            : strcmp(key, "⇧") == 0 ? "切换" : key;
+      int textW = Txt::width(CN12, caption);
       int textX = x + (keyW - textW) / 2;
-      Txt::draw(textX, y + 19, CN12, textColor, key);
+      Txt::draw(textX, y + 19, CN12, textColor, caption);
 
       // 注册热区
       char hitId[16];
@@ -202,7 +202,7 @@ KeyboardResult handleTouch(int x, int y) {
       } else {
         // 普通按键
         int len = strlen(g_input);
-        if (len < KB_MAX_INPUT - 1) {
+        if (len < g_maxChars) {
           strncat(g_input, key, 1);
         }
       }

@@ -1,0 +1,25 @@
+正式版刷机包 - 2026-09-24
+
+适用开发板：ESP32-2432S028（320x240 横屏）。本包是正式版，不含演示版。
+天气场景、蓝白五页、联网数据、WiFi 配网和蓝牙音乐已通过编译、主机及网页预览检查。
+尚未连接真机验证显示残影、闪烁、帧率、触摸响应和运行时堆内存。
+
+使用方式：
+1. 完整解压 ZIP，插上开发板 USB 数据线。
+2. 双击本目录 flash.cmd，等待烧录完成。
+3. 默认不擦除整片 Flash，保留 WiFi、城市偏好和触摸校准。
+
+如需指定串口，在本目录的 PowerShell 中执行：
+powershell -ExecutionPolicy Bypass -File .\flash.ps1 -Port COM3
+将 COM3 换成实际串口。不要误用旧包或 release/flash.ps1。
+
+本机需有 PlatformIO 自带的 esptool，或通过 pip 安装 esptool。
+手动烧录偏移（不是单个合并镜像）：
+final/bootloader.bin  0x1000
+final/partitions.bin  0x8000
+final/firmware.bin    0x10000
+
+SHA-256：
+bootloader.bin  0F65515A7E0DFE9CC4BC78C01BEF79C941AF1B2DEB34D01DDD500EE3D465EEDF
+partitions.bin  AAAE2888C5A6A348004B5B436F47ABB25AE32E72D9003902955A998EDA723EDD
+firmware.bin    965A7F9165B204BA706542B3EC51D2CC838D91A0C58D5A14AE2AAB8D101CA125

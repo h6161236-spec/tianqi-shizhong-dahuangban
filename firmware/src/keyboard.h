@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-#define KB_MAX_INPUT 64
+#define KB_MAX_INPUT 65
 
 // 键盘布局
 enum KeyboardLayout : uint8_t {
@@ -29,7 +29,8 @@ namespace Keyboard {
 void init();
 
 // 开始输入(设置提示文字、初始值)
-void startInput(const char* prompt, const char* initialValue = "");
+void startInput(const char* prompt, const char* initialValue = "",
+                uint8_t maxChars = KB_MAX_INPUT - 1);
 
 // 结束输入
 void endInput();
