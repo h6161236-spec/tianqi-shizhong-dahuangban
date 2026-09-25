@@ -74,6 +74,9 @@ int drawRight(int rx, int y, TxtFont f, uint16_t color, const char* s);
  */
 void clip(TxtFont f, const char* src, int maxPx, char* out, size_t outSize);
 
+/** One full UTF-8 line measured with the hardware font. Returns source bytes consumed. */
+size_t wrapLine(TxtFont f, const char* src, int maxPx, char* out, size_t outSize);
+
 /**
  * 跑马灯:在宽 w 的区域里循环滚动 s。
  * 靠 Sprite 边界自动裁剪,所以必须先把 target 设成正好这么宽的 Sprite。

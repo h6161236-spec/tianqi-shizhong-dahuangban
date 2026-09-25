@@ -36,8 +36,8 @@ struct MediaState {
   bool advOn;            // 蓝牙在广播
   bool connected;        // NUS 已连接
   char peer[24];         // 对端设备名
-  char title[40];
-  char artist[40];
+  char title[128];
+  char artist[128];
   char lyric[256];       // 当前行(BLE 模式只有一行,长句会在歌词区滚动)
   int32_t pos, dur;      // 秒;pos<0 = 手机端没推进度
   bool playing;
@@ -70,7 +70,7 @@ void setPage(uint8_t p);
 
 // ---- 偏好(NVS 持久) ----
 uint8_t bright();     // 10..100
-uint8_t specStyle();  // 0 渐变竖条 1 镜像 2 环形
+uint8_t specStyle();  // 0 放射条 1 环形波纹 2 光点绕圈 3 歌词频谱
 uint8_t wxStyle();    // 0 概览+七日 1 整页七日
 void resetPrefs();    // 恢复默认(不动 WiFi/天气缓存)
 

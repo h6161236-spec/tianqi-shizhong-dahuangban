@@ -39,13 +39,7 @@ inline void use(TxtFont f) {
 }
 
 /** UTF-8 首字节 -> 这个字符占几个字节。非法字节按 1 跳过,保证不死循环。 */
-inline size_t charBytes(uint8_t c) {
-  if (c < 0x80) return 1;
-  if ((c & 0xE0) == 0xC0) return 2;
-  if ((c & 0xF0) == 0xE0) return 3;
-  if ((c & 0xF8) == 0xF0) return 4;
-  return 1;
-}
+inline size_t charBytes(const char* s) { return Utf8::charBytes(s); }
 
 inline void copyStr(char* out, size_t outSize, const char* src, size_t n) {
   Utf8::copy(out, outSize, src, n);
@@ -119,30 +113,42 @@ void clip(TxtFont f, const char* src, int maxPx, char* out, size_t outSize) {
   }
 
   static const char kEllipsis[] = "...";
-  const int budget = maxPx - (int)u8f.getUTF8Width(kEllipsis);
-  if (budget <= 0) { out[0] = 0; return; }
-
-  // 逐个 UTF-8 字符累加宽度,直到再加一个就超预算
+  if (outSize < sizeof(kEllipsis) || width(f, kEllipsis) > maxPx) { out[0] = 0; return; }
   size_t keep = 0;
-  int w = 0;
+  memcpy(out, kEllipsis, sizeof(kEllipsis));
+  // U8g2 measures the last glyph's ink, but advances earlier glyphs by delta-x.
+  // Measure the whole candidate so mixed Latin/CJK titles cannot overflow.
   for (size_t i = 0; src[i];) {
-    const size_t n = charBytes((uint8_t)src[i]);
-    char one[5];
-    memcpy(one, src + i, n);
-    one[n] = 0;
-    const int cw = (int)u8f.getUTF8Width(one);
-    if (w + cw > budget) break;
-    w += cw;
-    i += n;
-    keep = i;
+    const size_t n = charBytes(src + i);
+    if (i + n + sizeof(kEllipsis) > outSize) break;
+    memcpy(out + i, src + i, n);
+    memcpy(out + i + n, kEllipsis, sizeof(kEllipsis));
+    if (width(f, out) > maxPx) break;
+    keep = i += n;
   }
+  memcpy(out + keep, kEllipsis, sizeof(kEllipsis));
+}
 
-  copyStr(out, outSize, src, keep);
-  // 追加省略号(空间不够就算了,截断本身已经表达了"还有更多")
-  const size_t used = strlen(out);
-  if (used + sizeof(kEllipsis) <= outSize) {
-    memcpy(out + used, kEllipsis, sizeof(kEllipsis));
+size_t wrapLine(TxtFont f, const char* src, int maxPx, char* out, size_t outSize) {
+  if (!outSize) return 0;
+  out[0] = 0;
+  if (!src || !*src || maxPx <= 0) return 0;
+  size_t consumed = 0, used = 0;
+  while (src[consumed]) {
+    if (src[consumed] == '\n' || src[consumed] == '\r') {
+      const char first = src[consumed++];
+      if (first == '\r' && src[consumed] == '\n') ++consumed;
+      break;
+    }
+    const size_t n = charBytes(src + consumed);
+    if (used + n >= outSize) break;
+    memcpy(out + used, src + consumed, n);
+    out[used + n] = 0;
+    if (used && width(f, out) > maxPx) { out[used] = 0; break; }
+    used += n;
+    consumed += n;
   }
+  return consumed;
 }
 
 int marquee(int y, int w, TxtFont f, uint16_t color, const char* s, int offset,
@@ -191,7 +197,7 @@ void fadeEdges(TFT_eSprite& spr, int w, int h, int fadePx, uint16_t bg) {
 int utf8Len(const char* s) {
   if (!s) return 0;
   int n = 0;
-  for (size_t i = 0; s[i]; i += charBytes((uint8_t)s[i])) ++n;
+  for (size_t i = 0; s[i]; i += charBytes(s + i)) ++n;
   return n;
 }
 
@@ -199,7 +205,7 @@ void utf8Head(const char* src, int n, char* out, size_t outSize) {
   if (!outSize) return;
   if (!src || n <= 0) { out[0] = 0; return; }
   size_t i = 0;
-  for (int k = 0; k < n && src[i]; ++k) i += charBytes((uint8_t)src[i]);
+  for (int k = 0; k < n && src[i]; ++k) i += charBytes(src + i);
   copyStr(out, outSize, src, i);
 }
 

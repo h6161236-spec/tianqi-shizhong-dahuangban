@@ -12,6 +12,9 @@ const html = fs.readFileSync(path.join(root, 'ui.html'), 'utf8');
 const m = html.match(/<script>([\s\S]*?)<\/script>/);
 if (!m) { console.error('no <script> block found'); process.exit(1); }
 let js = m[1];
+// Observe semantic text calls while the actual renderer paints hardware pixels.
+js = js.replace("const txt = (s, x, y, c, f = FONT.CN12, align = 'left') => {",
+  "const txt = (s, x, y, c, f = FONT.CN12, align = 'left') => { globalThis.__drawnText.push([s,x,y,c,f,align]);");
 
 /* ---- stubs ---- */
 const noop = () => {};
@@ -51,6 +54,7 @@ const getEl = id => {
 
 let rafCb = null;
 const sandbox = {
+  __drawnText: drawnText,
   console,
   document: {
     getElementById: getEl,
@@ -86,7 +90,7 @@ js += `
                 if (S.pkJump !== null) { S.pkJump += dt / .55; if (S.pkJump >= 1) S.pkJump = null; } },
   HITS: () => HITS, hitAt, txtMarquee, pinCity, shownWeather, weather: () => WX,
   dayLabel, validForecast, apiRefresh, netBadge, keyboardRows, keyboardLimit, solarToLunar,
-  connectDone,
+  connectDone, wrapLyrics, txtW, song,
 };
 `;
 
@@ -94,7 +98,10 @@ const ctx = vm.createContext(sandbox);
 let fails = 0;
 const fail = (what, e) => { fails++; console.error(`FAIL ${what}\n  ${e && e.stack ? e.stack.split('\n').slice(0,4).join('\n  ') : e}`); };
 
-try { vm.runInContext(js, ctx, { filename: 'ui.html:script' }); }
+try {
+  vm.runInContext(fs.readFileSync(path.join(root, 'fonts.js'), 'utf8'), ctx, { filename:'fonts.js' });
+  vm.runInContext(js, ctx, { filename: 'ui.html:script' });
+}
 catch (e) { fail('module top-level', e); process.exit(1); }
 
 const T = sandbox.__T;
@@ -111,7 +118,7 @@ for (let p = 0; p < T.PAGES.length; p++) {
 
 /* ---- 2. music page in all its variants ---- */
 const variants = [];
-for (const style of [0, 1, 2])
+for (const style of [0, 1, 2, 3])
   for (const playing of [true, false])
     for (const bt of ['con', 'adv', 'off'])
       variants.push({ style, playing, bt });
@@ -142,6 +149,36 @@ try {
   const movingX = drawnText[0][1];
   if (!(movingX < heldX)) throw new Error(`expected ${movingX} < ${heldX}`);
 } catch (e) { fail('long lyric marquee', e); }
+
+try {
+  T.S.page=1; T.S.vsel[1]=3; T.S.btState='con'; T.S.mediaReady=true;
+  const lyric='这是一句超过两行的歌词 Mixed ASCII 123，所有内容都需要显示，翻页后仍然能够看到最后一句。'.repeat(2);
+  const lines=T.wrapLyrics(lyric);
+  if (lines.join('')!==lyric || lines.some(line=>T.txtW(line,'CN16')>280))
+    throw new Error('lyrics were lost or overflowed while wrapping');
+  if (lines.length<=2) throw new Error('fixture must need multiple pages');
+  T.S.lyricOverride=lyric; drawnText.length=0; T.drawFrame();
+  if (!drawnText.some(t=>t[0]===lines[0] && t[2]===84) || !drawnText.some(t=>t[0]===lines[1] && t[2]===106))
+    throw new Error('first two lyric lines not visible');
+  T.tick(3.61); drawnText.length=0; T.drawFrame();
+  if (!drawnText.some(t=>t[0]===lines[2])) throw new Error('long lyrics did not advance to next page');
+  T.S.lyricOverride='新的一句'; drawnText.length=0; T.drawFrame();
+  if (!drawnText.some(t=>t[0]==='新的一句' && t[2]===84)) throw new Error('new line did not restart pagination');
+  T.S.lyricOverride=''; drawnText.length=0; T.drawFrame();
+  if (!drawnText.some(t=>t[0]==='等待歌词')) throw new Error('empty lyric lacks waiting state');
+  delete T.S.lyricOverride;
+  const current=T.song.lrc[Math.floor(T.S.trackPos/6)%T.song.lrc.length];
+  for (const style of [0,1,2,3]) {
+    T.S.vsel[1]=style; drawnText.length=0; T.drawFrame();
+    if (T.song.lrc.some(l=>l!==current && drawnText.some(t=>t[0]===l)))
+      throw new Error('preview fabricated future BLE lyrics');
+  }
+  T.S.vsel[1]=3; T.goVert(1);
+  if(T.S.vsel[1]!==0)throw new Error('four music styles do not wrap');
+  T.goVert(-1);
+  if(T.S.vsel[1]!==3)throw new Error('new style not reachable by reverse swipe');
+  T.S.toast=null;
+} catch (e) { fail('hardware lyric pagination and current-line parity',e); }
 
 /* ---- 3. every hotspot action fires without throwing ---- */
 const ids = new Set();

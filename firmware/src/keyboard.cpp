@@ -147,7 +147,8 @@ void render() {
 
       // 按键文字居中
       const char* caption = strcmp(key, " ") == 0 ? "空格"
-                            : strcmp(key, "⇧") == 0 ? "切换" : key;
+                            : strcmp(key, "⇧") == 0 ? "切换"
+                            : strcmp(key, "←") == 0 ? "退格" : key;
       int textW = Txt::width(CN12, caption);
       int textX = x + (keyW - textW) / 2;
       Txt::draw(textX, y + 19, CN12, textColor, caption);

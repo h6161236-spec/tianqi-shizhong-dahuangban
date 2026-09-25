@@ -18,7 +18,7 @@ if (-not (Test-Path $shotDir)) { New-Item -ItemType Directory -Path $shotDir | O
 $out = Join-Path $shotDir $name
 if (Test-Path $out) { Remove-Item $out -Force }
 
-$uri = ([System.Uri](Join-Path $root 'ui.html')).AbsoluteUri + "#page=$page"
+$uri = ([System.Uri](Join-Path $root 'ui.html')).AbsoluteUri + "#page=$page&capture=1"
 # Edge writes harmless noise to stderr; PS 5.1 turns that into NativeCommandError,
 # so swallow both streams and judge success by whether the file appeared.
 # A dedicated throwaway profile keeps concurrent/back-to-back runs from fighting
@@ -28,7 +28,7 @@ $edgeArgs = @(
   '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
   '--no-default-browser-check', '--disable-extensions', '--allow-file-access-from-files',
   "--user-data-dir=$profileDir",
-  '--window-size=1280,900', "--virtual-time-budget=$budget",
+  '--window-size=960,720', '--force-device-scale-factor=1', "--virtual-time-budget=$budget",
   "--screenshot=$out", $uri
 )
 & $edge $edgeArgs 2>&1 | Out-Null
@@ -45,7 +45,7 @@ if (-not (Test-Path $out)) { throw "screenshot failed: $out" }
 Add-Type -AssemblyName System.Drawing
 $src = [System.Drawing.Image]::FromFile($out)
 $cw = 960; $ch = 720
-$cx = 160; $cy = 140
+$cx = 0; $cy = 0
 $crop = New-Object System.Drawing.Rectangle($cx, $cy, $cw, $ch)
 $bmp = New-Object System.Drawing.Bitmap($cw, $ch)
 $g = [System.Drawing.Graphics]::FromImage($bmp)

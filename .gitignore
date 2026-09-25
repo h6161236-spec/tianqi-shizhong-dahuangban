@@ -13,3 +13,6 @@ Desktop.ini
 
 # Reasonix workspace dir (runtime state)
 /开发板1/
+
+# Python verification caches
+**/__pycache__/

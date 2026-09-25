@@ -18,6 +18,8 @@ $shots = [ordered]@{
   'music_spec0'  = 'page=1&spec=0'
   'music_spec1'  = 'page=1&spec=1'
   'music_spec2'  = 'page=1&spec=2'
+  'music_spec3'  = 'page=1&spec=3'
+  'music_long'   = 'page=1&spec=3&lyric=' + [Uri]::EscapeDataString(([char]0x6B4C).ToString() * 62)
   'music_paused' = 'page=1&play=0'
   'music_btoff'  = 'page=1&bt=off'
   'music_waiting'= 'page=1&meta=0'
@@ -45,10 +47,10 @@ foreach ($name in $shots.Keys) {
   $out = Join-Path $shotDir "$name.png"
   if (Test-Path $out) { Remove-Item $out -Force }
   $profileDir = Join-Path $env:TEMP ("edge_shot_" + [guid]::NewGuid().ToString('N').Substring(0,8))
-  $uri = $base + '#' + $shots[$name]
+  $uri = $base + '#' + $shots[$name] + '&capture=1'
   $a = @('--headless=new','--disable-gpu','--hide-scrollbars','--no-first-run',
          '--no-default-browser-check','--disable-extensions',
-         "--user-data-dir=$profileDir",'--window-size=1280,900',
+         "--user-data-dir=$profileDir",'--window-size=960,720','--force-device-scale-factor=1',
          '--virtual-time-budget=3200',"--screenshot=$out",$uri)
   & $edge $a 2>&1 | Out-Null
   $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
@@ -62,7 +64,7 @@ foreach ($name in $shots.Keys) {
     $bmp = New-Object System.Drawing.Bitmap(960, 720)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.DrawImage($src, (New-Object System.Drawing.Rectangle(0,0,960,720)),
-                       (New-Object System.Drawing.Rectangle(160,140,960,720)), 'Pixel')
+                       (New-Object System.Drawing.Rectangle(0,0,960,720)), 'Pixel')
     $g.Dispose(); $src.Dispose()
     $bmp.Save((Join-Path $shotDir "crop_$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()

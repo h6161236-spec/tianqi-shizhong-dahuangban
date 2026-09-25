@@ -5,7 +5,7 @@
  *  移植自 preview/ui.html(布局参数逐条对应),适配:
  *   - 时钟页 110ms 全帧重绘(场景动画),音乐页 100ms,其余按需重绘
  *   - canvas 半透明 → 向底色 lerp 的实色近似(问 Scene 要取样色)
- *   - 弹窗/键盘整屏淡蓝底接管(参考工程做法,不做半透明遮罩)
+ *   - 弹窗/键盘整屏暖纸底接管,不做半透明遮罩
  *   - 音乐页文字带「变了才擦重画」,圆盘+音波每帧推 disc,三键按需画
  *   - 密码键盘复用 keyboard 模块(4×10,参考工程验证过)
  */
@@ -45,7 +45,7 @@ uint16_t s_lastMinute = 0xFFFF;
 int8_t s_demoLrcRow = -1;   // 演示版当前歌词行(变了才重绘音乐页文字区)
 
 // 偏好(NVS)
-uint8_t s_bright = 72, s_specStyle = 0, s_wxStyle = 0;
+uint8_t s_bright = 72, s_specStyle = 3, s_wxStyle = 0;
 
 // 设置 / 日期
 int8_t s_setSel = 0, s_setScroll = 0;
@@ -90,7 +90,7 @@ bool s_musicReset = true;
 
 // 演示音乐(DEMO_MODE 用,数据同预览)
 const char* DEMO_TITLE = "夜曲";
-const char* DEMO_ARTIST = "周杰伦 - 十一月的萧邦";
+const char* DEMO_ARTIST = "周杰伦";
 const int DEMO_DUR = 227;
 const char* DEMO_LRC[5] = {
     "蝴蝶自在飞 像那破碎的过往", "为你弹奏萧邦的夜曲", "纪念我死去的爱情",
@@ -145,24 +145,39 @@ void statusBar(const char* left, const char* right, bool light = false) {
     if (right && right[0])
       Txt::drawRight(272, 13, CN12, TH::CARD_HI, right);
   } else {
-    Txt::draw(8, 13, CN12, TH::TXT_MID, left);
+    st.fillRoundRect(8, 7, 3, 10, 1, TH::ACCENT);
+    char clipped[96];
+    Txt::clip(CN12, left, 110, clipped, sizeof(clipped));
+    Txt::draw(18, 17, CN12, TH::TXT_HI, clipped);
     statusIcons(st, bg);
-    if (right && right[0])
-      Txt::drawRight(272, 13, CN12, TH::TXT_MID, right);
-    Gfx::divider(st, 0, 18, SCR_W, TH::LINE, TH::BG);
+    if (right && right[0]) {
+      Txt::clip(CN12, right, 108, clipped, sizeof(clipped));
+      Txt::drawRight(272, 17, CN12, TH::TXT_MID, clipped);
+    }
   }
-  Gfx::pushStripH(0, 0, 19);
+  Gfx::pushStripH(0, 0, light ? 19 : 23);
+}
+
+// 与网页共用的暖纸工作区和底部导航。
+void pageSurface() {
+  tft.fillScreen(TH::BG);
+  Gfx::card(tft, 6, 24, 308, 192, 10, TH::CARD, TH::BG);
+}
+
+void pageFooter() {
+  tft.fillRect(0, 220, SCR_W, 20, TH::CARD_HI);
+  tft.drawFastHLine(0, 220, SCR_W, TH::RIM);
 }
 
 // ================================================================ 页点
-// 时钟页页点叠在场景地面;其余四页页点画在淡蓝导航区。
+// 时钟页页点叠在场景地面;其余四页页点画在亚麻导航区。
 void pageDots(int cur, bool light) {
   if (light) {
     const uint16_t bg = (s_page == PG_CLOCK)
                             ? Scene::groundColor(hourFNow(), curSceneGroup())
                             : TH::CARD_HI;
-    Gfx::dots(tft, SCR_W / 2, 234, PG_N, cur, TH::ACCENT,
-              s_page == PG_CLOCK ? lerp565(bg, hex565(0xF4FAFF), 140)
+    Gfx::dots(tft, SCR_W / 2, s_page == PG_CLOCK ? 234 : 230, PG_N, cur, TH::ACCENT,
+              s_page == PG_CLOCK ? lerp565(bg, TH::CARD, 140)
                                  : TH::TXT_LO, bg);
   } else {
     Gfx::dots(tft, SCR_W / 2, 237, PG_N, cur, TH::ACCENT, TH::TXT_LO, TH::BG);
@@ -250,7 +265,7 @@ void pageClock(float dt) {
       char hhmm[8];
       snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lt.tm_hour, lt.tm_min);
       const uint16_t skyC = Scene::skyPixel(hF, grp, 44);   // 药丸处的天空色
-      const uint16_t pill = lerp565(skyC, hex565(0x10142C), 115);
+      const uint16_t pill = lerp565(skyC, hex565(0x304D36), 210);
       int digitW = 24;
       int w = Gfx::timeWidth(hhmm, digitW, 38, 3);
       if (w > 124) { digitW = 22; w = Gfx::timeWidth(hhmm, digitW, 38, 3); }
@@ -260,7 +275,10 @@ void pageClock(float dt) {
                    TH::CARD_HI, pill, true);
       Gfx::pushBigRegion(6, 20, 128, 48, 0, 0);
     } else {
-      Gfx::beginBig(Scene::skyPixel(hF, grp, 44));
+      const uint16_t skyC = Scene::skyPixel(hF, grp, 44);
+      Gfx::beginBig(skyC);
+      Gfx::big().fillSmoothRoundRect(0, 0, 128, 48, 10,
+                                     lerp565(skyC, hex565(0x304D36), 210), skyC);
       Txt::drawCenter(64, 30, CN16, TH::CARD, "--:--");
       Gfx::pushBigRegion(6, 20, 128, 48);
     }
@@ -288,8 +306,8 @@ void pageClock(float dt) {
     {
       const Wx::Data& wx = Wx::data();
       const uint16_t sky47 = Scene::skyPixel(hF, grp, 47);
-      const uint16_t fill = lerp565(sky47, hex565(0xFFFFFF), 199);
-      const uint16_t rim = lerp565(sky47, hex565(0x267EC7), 90);
+      const uint16_t fill = lerp565(sky47, TH::CARD, 224);
+      const uint16_t rim = TH::RIM;
       Gfx::beginBig(sky47);
       Gfx::big().fillSmoothRoundRect(0, 0, 100, 50, 9, fill, sky47);
       Gfx::big().drawSmoothRoundRect(0, 0, 9, 7, 100, 50, rim, sky47);
@@ -310,7 +328,7 @@ void pageClock(float dt) {
       if (badgeText) {
         const uint16_t groundC = Scene::groundColor(hF, grp);
         tft.fillSmoothRoundRect(6, 222, 168, 20, 9,
-                                lerp565(groundC, hex565(0x102E44), 140), groundC);
+                                lerp565(groundC, hex565(0x304D36), 190), groundC);
         Txt::draw(14, 236, CN12, TH::CARD, badgeText);
       }
     }
@@ -404,7 +422,7 @@ void specRing(TFT_eSPI& t, int cx, int cy, int r, int style) {
 }
 
 /**
- * 封面圆盘:浅蓝唱盘 + 音符。皮卡丘只出现在时钟页,这里不画。
+ * 封面圆盘:亚麻唱盘 + 苔绿音符。皮卡丘只出现在时钟页,这里不画。
  * 同预览 coverDisc。spin 是虚线环自转角度(度)。
  * 频谱走环形样式时不画虚线环(dashRing=false),让位给音波。
  */
@@ -422,7 +440,7 @@ void coverDisc(TFT_eSPI& t, int cx, int cy, int r, float spin, bool dashRing) {
   t.drawSmoothCircle(cx, cy, (int)(r * 0.72f),
                      lerp565(TH::CARD_HI, TH::ACCENT, 140), TH::CARD_HI);
   t.fillSmoothCircle(cx, cy, (int)(r * 0.38f), TH::ACCENT, TH::CARD_HI);
-  Gfx::glyph(t, GL_NOTE, cx, cy, (int)(r * 0.72f), TH::TXT_HI, TH::ACCENT);
+  Gfx::glyph(t, GL_NOTE, cx, cy, (int)(r * 0.72f), TH::CARD, TH::ACCENT);
   t.drawSmoothCircle(cx, cy, r, TH::ACCENT, TH::CARD_HI);
 }
 
@@ -432,10 +450,12 @@ void coverDisc(TFT_eSPI& t, int cx, int cy, int r, float spin, bool dashRing) {
  */
 void pageMusic(float dt, bool rebuild) {
   static bool valid = false, wasConnected = false, wasMediaReady = false;
-  static char oldStatus[80] = "", oldTitle[64] = "", oldArtist[80] = "";
-  static char oldLyrics[3][256] = {};
+  static char oldStatus[80] = "", oldTitle[128] = "", oldArtist[128] = "";
+  static char oldLyric[256] = "";
+  static char lyricLines[16][256] = {};
+  static uint8_t lyricLineN = 0;
   static uint32_t lyricStartMs = 0;
-  static int oldButtons = -1;
+  static int oldButtons = -1, oldStyle = -1, oldLyricPage = -1;
   static bool hadToast = false;
 #ifdef DEMO_MODE
   const bool connected = true;
@@ -443,195 +463,212 @@ void pageMusic(float dt, bool rebuild) {
   const bool connected = g_media.connected;
 #endif
   const bool mediaReady = g_media.title[0] || g_media.artist[0];
-  const bool reset = rebuild || s_musicReset || !valid ||
+  const bool lyricsStyle = s_specStyle == 3;
+  const bool presentationChanged = rebuild || s_musicReset || oldStyle != s_specStyle;
+  const bool toastEnded = hadToast && s_toastT <= 0.0f;
+  const bool reset = presentationChanged || !valid || toastEnded ||
                      connected != wasConnected || mediaReady != wasMediaReady;
   valid = true;
   wasConnected = connected;
   wasMediaReady = mediaReady;
+  oldStyle = s_specStyle;
   s_musicReset = false;
+  hadToast = s_toastT > 0.0f;
   char status[80];
   snprintf(status, sizeof(status), "%d/%d/%d/%d/%s", g_media.playing,
            g_media.advOn, WifiMgr::isConnected(), WifiMgr::getConfig()->saved,
            g_media.peer);
   const bool statusChanged = reset || strcmp(status, oldStatus) != 0;
   if (reset) {
-    tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::CARD);
-    Scene::footer(tft, TH::BG);
+    pageSurface();
+    pageFooter();
     pageDots(1, true);
   }
-  if (!reset && hadToast && s_toastT <= 0.0f) {
-    Gfx::beginStrip(TH::CARD);
-    Gfx::pushStripH(0, 200, Scene::FOOT_TOP - 200);
-    Scene::footer(tft, TH::BG);
-    pageDots(1, true);
-  }
-  hadToast = s_toastT > 0.0f;
 #ifndef DEMO_MODE
   if (!connected) {
-    // 等手机来连 / 蓝牙关了:主体+静止页脚按需重绘
     if (statusChanged) {
       const bool adv = g_media.advOn;
-      tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::CARD);
+      pageSurface();
+      pageFooter();
+      pageDots(1, true);
       statusBar("音乐", adv ? "广播中" : "蓝牙已关");
-      Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 82, 40,
+      Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 82, 36,
                  adv ? TH::ACCENT : TH::TXT_LO, TH::CARD);
-      Txt::drawCenter(SCR_W / 2, 124, CN16, TH::TXT_MID,
+      Txt::drawCenter(SCR_W / 2, 124, CN16, TH::TXT_HI,
                       adv ? "等手机来连" : "蓝牙已关闭");
-      Txt::drawCenter(SCR_W / 2, 143, NUM14, adv ? TH::ACCENT : TH::TXT_LO,
-                      "Pika-Music");
-      Txt::drawCenter(SCR_W / 2, 158, CN12, TH::TXT_LO,
+      Txt::drawCenter(SCR_W / 2, 143, CN12, TH::ACCENT, "Pika-Music");
+      Txt::drawCenter(SCR_W / 2, 158, CN12, TH::TXT_MID,
                       "手机打开配套 App,搜到名字点连接");
       textBtn("m.btpanel", 96, 170, 128, 30, adv ? "蓝牙设置" : "开启蓝牙",
               TH::ACCENT);
-    }
-    if (!statusChanged) hitAdd("m.btpanel", 96, 170, 128, 30);
+    } else hitAdd("m.btpanel", 96, 170, 128, 30);
     strlcpy(oldStatus, status, sizeof(oldStatus));
     return;
   }
-  if (connected && !mediaReady) {
+  if (!mediaReady) {
     if (statusChanged) {
-      tft.fillRect(0, 0, SCR_W, Scene::FOOT_TOP, TH::CARD);
       statusBar("音乐", "蓝牙已连");
-      Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 90, 40,
-                 TH::ACCENT, TH::CARD);
-      Txt::drawCenter(SCR_W / 2, 139, CN16, TH::TXT_HI,
-                      "等待手机媒体信息");
+      Gfx::glyph(tft, GL_BLUETOOTH, SCR_W / 2, 90, 36, TH::ACCENT, TH::CARD);
+      Txt::drawCenter(SCR_W / 2, 139, CN16, TH::TXT_HI, "等待手机媒体信息");
     }
     strlcpy(oldStatus, status, sizeof(oldStatus));
     return;
   }
 #endif
-
   const bool playing = g_media.playing;
-  const int pos = g_media.pos >= 0 ? g_media.pos : s_demoPos;
   if (statusChanged) {
-    statusBar(playing ? "正在播放" : "已暂停",
-              g_media.peer[0] ? g_media.peer : "", false);
+    char peer[48];
+    Txt::clip(CN12, g_media.peer, 150, peer, sizeof(peer));
+    statusBar(playing ? "正在播放" : "已暂停", peer);
     strlcpy(oldStatus, status, sizeof(oldStatus));
   }
   const char* ti = g_media.title[0] ? g_media.title : "未知歌曲";
   const char* ar = g_media.artist[0] ? g_media.artist : "未知歌手";
   if (reset || strcmp(ti, oldTitle) || strcmp(ar, oldArtist)) {
+    char c[128];
+    if (lyricsStyle) {
+      Gfx::beginStrip(TH::CARD);
+      Txt::clip(CN12, ar, 92, c, sizeof(c));
+      Txt::draw(18, 17, CN12, TH::TXT_MID, c);
+      Txt::clip(CN16, ti, 184, c, sizeof(c));
+      Txt::draw(118, 18, CN16, TH::TXT_HI, c);
+      Gfx::pushStripRegion(12, 28, 296, 27, 12, 0);
+      Gfx::divider(tft, 18, 56, 284, TH::LINE, TH::CARD);
+    } else {
       Gfx::beginBig(TH::CARD);
-      char c[48];
       Txt::clip(CN16, ti, MU_TXTW, c, sizeof(c));
       Txt::draw(0, 18, CN16, TH::TXT_HI, c);
       Txt::clip(CN12, ar, MU_TXTW, c, sizeof(c));
       Txt::draw(0, 36, CN12, TH::TXT_MID, c);
-      Gfx::divider(Gfx::big(), 0, 48, MU_TXTW, TH::RIM, TH::CARD);
+      Gfx::divider(Gfx::big(), 0, 48, MU_TXTW, TH::LINE, TH::CARD);
       Gfx::pushBigRegion(MU_TXTX, 44, MU_TXTW, 50);
-      strlcpy(oldTitle, ti, sizeof(oldTitle));
-      strlcpy(oldArtist, ar, sizeof(oldArtist));
+      Txt::draw(MU_TXTX, 107, CN12, TH::TXT_LO, "歌词");
+    }
+    strlcpy(oldTitle, ti, sizeof(oldTitle));
+    strlcpy(oldArtist, ar, sizeof(oldArtist));
   }
 #ifdef DEMO_MODE
-      const int li = (pos / 6) % 5;
-      const char* l0 = DEMO_LRC[li];
-      const char* l1 = DEMO_LRC[(li + 1) % 5];
-      const char* l2 = DEMO_LRC[(li + 2) % 5];
+  const int pos = g_media.pos >= 0 ? g_media.pos : s_demoPos;
+  const char* lyric = DEMO_LRC[(pos / 6) % 5];
 #else
-      // BLE 模式手机只推当前行,后两行留空
-      const char* l0 = g_media.lyric;
-      const char* l1 = "";
-      const char* l2 = "";
+  const char* lyric = g_media.lyric;
 #endif
-  const bool lyricsChanged = reset || strcmp(l0, oldLyrics[0]) ||
-                             strcmp(l1, oldLyrics[1]) ||
-                             strcmp(l2, oldLyrics[2]);
-  if (lyricsChanged) lyricStartMs = millis();
-  const bool lyricScrolls = l0[0] && Txt::width(CN12, l0) > MU_TXTW;
-  if (lyricsChanged || lyricScrolls) {
-      Gfx::beginBig(TH::CARD);
-      char c[48];
-      if (l0[0]) {
-        const uint32_t elapsed = millis() - lyricStartMs;
-        const int offset = lyricScrolls && elapsed > MU_LRC_HOLD_MS
-                               ? (int)(((elapsed - MU_LRC_HOLD_MS) / 1000U) *
-                                           (uint32_t)MU_LRC_SPEED +
-                                       ((elapsed - MU_LRC_HOLD_MS) % 1000U) *
-                                           (uint32_t)MU_LRC_SPEED / 1000U)
-                               : 0;
-        Txt::marquee(16, MU_TXTW, CN12, TH::ACCENT, l0, offset);
-        if (offset > 0)
-          Txt::fadeEdges(Gfx::big(), MU_TXTW, 20, 8, TH::CARD);
-      }
-      if (l1[0]) {
-        Txt::clip(CN12, l1, MU_TXTW, c, sizeof(c));
-        Txt::draw(0, 32, CN12, TH::TXT_LO, c);
-      }
-      if (l2[0]) {
-        Txt::clip(CN12, l2, MU_TXTW, c, sizeof(c));
-        Txt::draw(0, 47, CN12, TH::TXT_LO, c);
-      }
-      Gfx::pushBigRegion(MU_TXTX, 96, MU_TXTW, 54);
-      strlcpy(oldLyrics[0], l0, sizeof(oldLyrics[0]));
-      strlcpy(oldLyrics[1], l1, sizeof(oldLyrics[1]));
-      strlcpy(oldLyrics[2], l2, sizeof(oldLyrics[2]));
+  const bool lyricsChanged = reset || strcmp(lyric, oldLyric) != 0;
+  if (lyricsChanged) {
+    // 每次收到同一句歌词的心跳不重置翻页；实际文本或样式变化才重新开始。
+    if (strcmp(lyric, oldLyric) != 0 || oldLyricPage < 0 || presentationChanged)
+      lyricStartMs = millis();
+    strlcpy(oldLyric, lyric, sizeof(oldLyric));
+    lyricLineN = 0;
+    const char* cursor = lyric;
+    while (*cursor && lyricLineN < 16) {
+      const size_t consumed = Txt::wrapLine(CN16, cursor, 280,
+                                            lyricLines[lyricLineN], 256);
+      if (!consumed) break;
+      cursor += consumed;
+      ++lyricLineN;
+    }
+    oldLyricPage = -1;
   }
-
-  // ---- 圆盘 + 环形音波:画进 disc Sprite,推屏时避开三键 ----
-  // 背景是纯色 TH::BG,不透明覆盖,不会闪白也不留残影。
-  TFT_eSprite& d = Gfx::disc();
-  d.fillSprite(TH::CARD);
-  specRing(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR + 3, s_specStyle);
-  coverDisc(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR,
-            playing ? s_specPhase * 26.0f : 0.0f, false);
-
-  // 3 个圆形传输键:上一曲 / 播放(大) / 下一曲,横排在封面下方。
-  // 主键实心红大圆,副键描边小圆(同预览 roundBtn)。按钮直接画屏。
+  if (lyricsStyle) {
+    const int pages = (lyricLineN + 1) / 2;
+    const int lyricPage = pages > 1 ? ((millis() - lyricStartMs) / 3600U) % pages : 0;
+    if (lyricsChanged || lyricPage != oldLyricPage) {
+      // strip 只有28px高，分两个27px横带合成54px歌词窗口。
+      // 每个横带重画并裁剪两行，避免屏幕清底引起闪烁。
+      for (int band = 0; band < 2; ++band) {
+        Gfx::beginStrip(TH::CARD);
+        if (lyricLineN == 0) {
+          Txt::drawCenter(140, 31 - band * 27, CN16, TH::TXT_LO, "等待歌词");
+        } else {
+          for (int line = 0; line < 2; ++line) {
+            const int row = lyricPage * 2 + line;
+            if (row < lyricLineN)
+              Txt::drawCenter(140, 20 + line * 22 - band * 27, CN16,
+                              TH::TXT_HI, lyricLines[row]);
+          }
+        }
+        Gfx::pushStripRegion(20, 64 + band * 27, 280, 27);
+      }
+      oldLyricPage = lyricPage;
+    }
+    // 32根分节柱由16个真实频段线性插值；矮柱同样保留一个可见节拍。
+    for (int band = 0; band < 2; ++band) {
+      Gfx::beginStrip(TH::CARD);
+      TFT_eSprite& st = Gfx::strip();
+      for (int i = 0; i < 32; ++i) {
+        const float sample = i * 15.0f / 31.0f;
+        const int lo = (int)sample, hi = lo < 15 ? lo + 1 : lo;
+        const float value = s_spec[lo] + (s_spec[hi] - s_spec[lo]) * (sample - lo);
+        int steps = (int)(value * 12.0f / 255.0f + 0.5f);
+        if (steps < 1) steps = 1;
+        if (steps > 12) steps = 12;
+        for (int j = 0; j < steps; ++j)
+          st.fillRect(20 + i * 9, 45 - j * 4 - band * 24, 6, 3,
+                      TH::neon((uint8_t)(j * 255 / 11)));
+      }
+      Gfx::pushStripRegion(20, 126 + band * 24, 285, 24, 20, 0);
+    }
+  } else {
+    const bool scrolls = lyric[0] && Txt::width(CN12, lyric) > MU_TXTW;
+    if (lyricsChanged || scrolls) {
+      Gfx::beginBig(TH::CARD);
+      if (lyric[0]) {
+        const uint32_t elapsed = millis() - lyricStartMs;
+        const int offset = scrolls && elapsed > MU_LRC_HOLD_MS
+            ? (int)((elapsed - MU_LRC_HOLD_MS) * MU_LRC_SPEED / 1000U) : 0;
+        Txt::marquee(16, MU_TXTW, CN12, TH::ACCENT, lyric, offset);
+        if (offset > 0) Txt::fadeEdges(Gfx::big(), MU_TXTW, 24, 8, TH::CARD);
+      } else Txt::draw(0, 16, CN12, TH::TXT_LO, "等待歌词");
+      Gfx::pushBigRegion(MU_TXTX, 112, MU_TXTW, 24);
+    }
+    TFT_eSprite& d = Gfx::disc();
+    d.fillSprite(TH::CARD);
+    specRing(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR + 3, s_specStyle);
+    coverDisc(d, MU_CX - MU_DISC_X, MU_CY - MU_DISC_Y, MU_CR,
+              playing ? s_specPhase * 26.0f : 0.0f, false);
+    const int visH = MU_BTN_TOP - MU_DISC_Y;
+    Gfx::pushDiscRegion(MU_DISC_X, MU_DISC_Y, GFX_DISC_W, visH);
+    const int playLeft = SCR_W / 2 - 21;
+    const int prevLeft = SCR_W / 2 - MU_BTNGAP - 15;
+    const int prevTop = MU_BTNCY - 15;
+    const int discBot = MU_DISC_Y + GFX_DISC_H;
+    if (prevTop > MU_BTN_TOP)
+      Gfx::pushDiscRegion(MU_DISC_X, MU_BTN_TOP, playLeft - MU_DISC_X,
+                          prevTop - MU_BTN_TOP, 0, visH);
+    if (discBot > prevTop)
+      Gfx::pushDiscRegion(MU_DISC_X, prevTop, prevLeft - MU_DISC_X,
+                          discBot - prevTop, 0, prevTop - MU_DISC_Y);
+  }
   const int buttonState = (playing ? 1 : 0) | (hitIsPressed("m.prev") ? 2 : 0) |
                           (hitIsPressed("m.play") ? 4 : 0) |
                           (hitIsPressed("m.next") ? 8 : 0);
   const bool paintButtons = reset || buttonState != oldButtons;
-  auto roundBtn = [paintButtons](const char* id, int screenX, int r, Glyph k,
-                                bool primary) {
+  const int buttonY = lyricsStyle ? 199 : MU_BTNCY;
+  auto roundBtn = [paintButtons, buttonY](const char* id, int screenX, int r,
+                                        Glyph glyph, bool primary) {
     const int hitR = (r + 6 > 15) ? r + 6 : 15;
-    hitAdd(id, screenX - hitR, MU_BTNCY - hitR, hitR * 2, hitR * 2);
+    hitAdd(id, screenX - hitR, buttonY - hitR, hitR * 2, hitR * 2);
     if (!paintButtons) return;
     Gfx::beginBig(TH::CARD);
     TFT_eSprite& t = Gfx::big();
     const int cx = r + 1, cy = r + 1;
     const bool down = hitIsPressed(id);
-    if (primary) {
-      Gfx::glow(t, cx, cy, r, TH::ACCENT, TH::CARD);
-      const uint16_t fill = down ? TH::BLUE : TH::ACCENT;
-      t.fillSmoothCircle(cx, cy, r, fill, TH::CARD);
-      Gfx::glyph(t, k, cx, cy, r,
-                 down ? TH::TXT_HI : TH::CARD, fill);
-    } else {
-      const uint16_t fill = down ? TH::CARD_HI : TH::CARD;
-      t.fillSmoothCircle(cx, cy, r, fill, TH::CARD);
-      t.drawSmoothCircle(cx, cy, r, down ? TH::ACCENT : TH::RIM, fill);
-      Gfx::glyph(t, k, cx, cy, (int)(r * 0.92f),
-                 down ? TH::TXT_HI : TH::TXT_MID, fill);
-    }
-    Gfx::pushBigRegion(screenX - cx, MU_BTNCY - cy, 2 * r + 3, 2 * r + 3);
+    const uint16_t fill = primary ? (down ? TH::BLUE : TH::ACCENT)
+                                  : (down ? TH::CARD_HI : TH::CARD);
+    t.fillSmoothCircle(cx, cy, r, fill, TH::CARD);
+    if (!primary) t.drawSmoothCircle(cx, cy, r, down ? TH::ACCENT : TH::RIM, fill);
+    Gfx::glyph(t, glyph, cx, cy, primary ? r : (int)(r * 0.92f),
+               primary ? TH::CARD : TH::TXT_MID, fill);
+    Gfx::pushBigRegion(screenX - cx, buttonY - cy, 2 * r + 3, 2 * r + 2);
   };
-  // 整块 push 会把精灵里的白底盖到三键上。主键顶 y=158,副键圆顶 y=164。
-  // 先推到主键顶;再把封面正下方的射线尾巴(x 停在上一曲键左侧)补上。
-  {
-    const int visH = MU_BTN_TOP - MU_DISC_Y;
-    Gfx::pushDiscRegion(MU_DISC_X, MU_DISC_Y, GFX_DISC_W, visH);
-    // y=158..164 上一曲圆还没到,可以把射线补到播放键左缘;再往下停在上一曲左缘
-    const int playLeft = SCR_W / 2 - 21;
-    const int prevLeft = SCR_W / 2 - MU_BTNGAP - 15;
-    const int prevTop = MU_BTNCY - 15;
-    const int discBot = MU_DISC_Y + GFX_DISC_H;
-    const int srcBase = MU_BTN_TOP - MU_DISC_Y;
-    if (prevTop > MU_BTN_TOP)
-      Gfx::pushDiscRegion(MU_DISC_X, MU_BTN_TOP, playLeft - MU_DISC_X,
-                          prevTop - MU_BTN_TOP, 0, srcBase);
-    if (discBot > prevTop)
-      Gfx::pushDiscRegion(MU_DISC_X, prevTop, prevLeft - MU_DISC_X,
-                          discBot - prevTop, 0, prevTop - MU_DISC_Y);
-  }
-  roundBtn("m.prev", SCR_W / 2 - MU_BTNGAP, 14, GL_PREV, false);
-  roundBtn("m.play", SCR_W / 2, 20, playing ? GL_PAUSE : GL_PLAY, true);
-  roundBtn("m.next", SCR_W / 2 + MU_BTNGAP, 14, GL_NEXT, false);
+  roundBtn("m.prev", 116, lyricsStyle ? 12 : 14, GL_PREV, false);
+  roundBtn("m.play", 160, lyricsStyle ? 16 : 20, playing ? GL_PAUSE : GL_PLAY, true);
+  roundBtn("m.next", 204, lyricsStyle ? 12 : 14, GL_NEXT, false);
   oldButtons = buttonState;
 }
-
 // ================================================================ 页 3:天气
-// 温度区间条:槽 + [lo,hi] 子段蓝→黄渐变(圆头)
+// 温度区间条:槽 + [lo,hi] 子段灰绿→琥珀渐变(圆头)
 void tempBar(int lo, int hi, int allLo, int allHi, int x, int y, int w, int h) {
   tft.fillSmoothRoundRect(x, y, w, h, h / 2, TH::CARD_HI, TH::CARD);
   const int span = (allHi - allLo) > 0 ? (allHi - allLo) : 1;
@@ -666,7 +703,7 @@ WxIcon sceneToIcon(Scene::Group g) {
 
 void kvRow(int x, int y, const char* k, const char* v, uint16_t c) {
   Txt::draw(x, y, CN12, TH::TXT_LO, k);
-  Txt::drawRight(x + 62, y, CN12, c, v);
+  Txt::drawRight(x + 110, y, CN12, c, v);
 }
 
 void pageWeather(float dt) {
@@ -692,7 +729,7 @@ void pageWeather(float dt) {
   if (!wx.valid || wx.dayN == 0) {
     Txt::drawCenter(SCR_W / 2, 102, CN16, TH::TXT_HI, "暂无天气数据");
     Txt::drawCenter(SCR_W / 2, 128, CN12, TH::TXT_MID, Wx::place().name);
-    Scene::footer(tft, TH::BG);
+    pageFooter();
     pageDots(2, true);
     return;
   }
@@ -701,9 +738,10 @@ void pageWeather(float dt) {
     // 整页七日(坐标同预览:行距 26,首行 y=24,今天一张白卡)
     for (int i = 0; i < wx.dayN; ++i) {
       const Wx::Day& d = wx.days[i];
-      const int y = 24 + i * 26;
-      if (i == 0) Gfx::card(tft, 6, y, 308, 24, 6, TH::CARD_HI, TH::CARD);
-      Txt::draw(12, y + 16, CN12, i == 0 ? TH::TXT_HI : TH::TXT, Wx::dayLabel(i));
+      const int y = 30 + i * 26;
+      if (i == 0) Gfx::card(tft, 12, y, 296, 24, 6, TH::CARD_HI, TH::CARD);
+      else Gfx::divider(tft, 18, y + 24, 284, TH::LINE, TH::CARD);
+      Txt::draw(18, y + 16, CN12, i == 0 ? TH::TXT_HI : TH::TXT, Wx::dayLabel(i));
       Gfx::wxIcon(tft, sceneToIcon(Scene::wmoGroup(d.wmo)), 55, y + 12, 18,
                    i == 0 ? TH::CARD_HI : TH::CARD);
       char wtx[24];
@@ -716,44 +754,46 @@ void pageWeather(float dt) {
       snprintf(ts, sizeof(ts), "%d°", d.tmax);
       Txt::drawRight(302, y + 16, CN12, TH::AMBER, ts);
     }
-    Scene::footer(tft, TH::BG);
+    pageFooter();
     pageDots(2, true);
     return;
   }
 
   // 样式 0:当前概览 + 七日紧凑列表
-  Gfx::wxIcon(tft, sceneToIcon(Scene::wmoGroup(wx.wmo)), 39, 55, 58, TH::CARD);
+  Gfx::wxIcon(tft, sceneToIcon(Scene::wmoGroup(wx.wmo)), 40, 54, 44, TH::CARD);
   char tempS[8];
   snprintf(tempS, sizeof(tempS), "%d", wx.temp);
-  Txt::draw(74, 70, NUM22, TH::TXT_HI, tempS);
-  Txt::draw(74 + Txt::width(NUM22, tempS) + 2, 48, CN12, TH::TXT_MID, "°C");
-  Txt::draw(76, 84, CN16, TH::TXT, Wx::wmoText(wx.wmo));
+  Txt::draw(76, 58, NUM22, TH::TXT_HI, tempS);
+  Txt::draw(76 + Txt::width(NUM22, tempS) + 2, 58, CN12, TH::TXT_MID, "°C");
+  char currentText[32];
+  Txt::clip(CN16, Wx::wmoText(wx.wmo), 92, currentText, sizeof(currentText));
+  Txt::draw(76, 80, CN16, TH::TXT, currentText);
 
-  Gfx::card(tft, 180, 26, 132, 62, 7, TH::CARD, TH::CARD);
+  Gfx::card(tft, 176, 32, 126, 54, 6, TH::CARD_HI, TH::CARD);
   char vs[16];
   snprintf(vs, sizeof(vs), "%d°", wx.feels);
-  kvRow(188, 44, "体感", vs, TH::AMBER);
+  kvRow(184, 47, "体感", vs, TH::AMBER);
   snprintf(vs, sizeof(vs), "%d%%", wx.hum);
-  kvRow(188, 60, "湿度", vs, TH::BLUE);
-  kvRow(188, 76, "风", wx.wind, TH::TXT);
+  kvRow(184, 63, "湿度", vs, TH::BLUE);
+  kvRow(184, 79, "风", wx.wind, TH::TXT);
 
-  Gfx::divider(tft, 8, 98, 304, TH::LINE, TH::CARD);
-  Txt::draw(10, 114, CN12, TH::TXT_MID, "未来七天");
+  Gfx::divider(tft, 18, 94, 284, TH::LINE, TH::CARD);
+  Txt::draw(18, 110, CN12, TH::TXT_MID, "未来七天");
 
   // 七日紧凑列表(坐标同预览:首行 y=116,行距 13,7 行止于 207,让开页脚)
   for (int i = 0; i < wx.dayN; ++i) {
     const Wx::Day& d = wx.days[i];
-    const int y = 122 + i * 13;
-    Txt::draw(10, y + 8, CN12, i == 0 ? TH::TXT_HI : TH::TXT_MID, Wx::dayLabel(i));
-    Gfx::wxIcon(tft, sceneToIcon(Scene::wmoGroup(d.wmo)), 50, y + 6, 12, TH::CARD);
+    const int y = 116 + i * 14;
+    Txt::draw(18, y + 11, CN12, i == 0 ? TH::TXT_HI : TH::TXT_MID, Wx::dayLabel(i));
+    Gfx::wxIcon(tft, sceneToIcon(Scene::wmoGroup(d.wmo)), 56, y + 7, 12, TH::CARD);
     char ts[8];
     snprintf(ts, sizeof(ts), "%d°", d.tmin);
-    Txt::drawRight(88, y + 8, CN12, TH::BLUE, ts);
-    tempBar(d.tmin, d.tmax, allLo, allHi, 92, y + 3, 174, 5);
+    Txt::drawRight(92, y + 11, CN12, TH::BLUE, ts);
+    tempBar(d.tmin, d.tmax, allLo, allHi, 102, y + 4, 154, 5);
     snprintf(ts, sizeof(ts), "%d°", d.tmax);
-    Txt::drawRight(310, y + 8, CN12, TH::AMBER, ts);
+    Txt::drawRight(302, y + 11, CN12, TH::AMBER, ts);
   }
-  Scene::footer(tft, TH::BG);
+  pageFooter();
   pageDots(2, true);
 }
 
@@ -772,7 +812,7 @@ void pageDate(float dt) {
   snprintf(head, sizeof(head), "%d 年 %d 月", vy, m);
   statusBar(head, s_monthOff ? "滑回本月" : "今天", false);
 
-  const int cw = 42, x0 = 8, y0 = 28;
+  const int cw = 42, x0 = 13, y0 = 30;
   for (int i = 0; i < 7; ++i) {
     // weekName "周日" 跳过首字 → "日"
     Txt::drawCenter(x0 + i * cw + cw / 2, y0 + 9, CN12,
@@ -797,9 +837,8 @@ void pageDate(float dt) {
 
     if (today) {
       const int tx = x0 + col * cw + 2, ty = cy - 3;
-      Gfx::cardGrad(tft, tx, ty, cw - 4, rh - 2, 5, TH::GOLD_DK, TH::CARD_HI,
-                    TH::CARD);
-      tft.drawSmoothRoundRect(tx, ty, 5, 3, cw - 4, rh - 2, TH::ACCENT, TH::CARD);
+      Gfx::card(tft, tx, ty, cw - 4, rh - 2, 5, TH::CARD_HI, TH::CARD);
+      tft.fillRoundRect(tx + 3, ty + 5, 2, 8, 1, TH::ACCENT);
     }
     const bool weekend = (col == 0 || col == 6);
     char ds[5];
@@ -813,7 +852,7 @@ void pageDate(float dt) {
     } else if (term) {
       strlcpy(sub, term, sizeof(term));
     } else if (l.valid) {
-      if (l.day == 1) Lunar::dateText(l, sub, sizeof(sub));
+      if (l.day == 1) snprintf(sub, sizeof(sub), "%s%s月", l.leap ? "闰" : "", Lunar::monthName(l.month));
       else strlcpy(sub, Lunar::dayName(l.day), sizeof(sub));
     } else {
       sub[0] = 0;
@@ -823,14 +862,14 @@ void pageDate(float dt) {
                        : today ? TH::ACCENT : TH::TXT_LO;
     if (rh >= 24 && sub[0]) {
       char subClip[16];
-      Txt::clip(CN12, sub, 40, subClip, sizeof(subClip));
-      Txt::drawCenter(cx, cy + 21, CN12, subC, subClip);
+      Txt::clip(CN12, sub, 38, subClip, sizeof(subClip));
+      Txt::drawCenter(cx, cy + 22, CN12, subC, subClip);
     }
   }
 
   // 今日农历信息带(坐标同预览:分割线 196、文字基线 207,让开页脚)
   if (isThis) {
-    Gfx::divider(tft, 8, 196, 304, TH::LINE, TH::CARD);
+    Gfx::divider(tft, 18, 201, 284, TH::LINE, TH::CARD);
     LunarDate l = Lunar::fromSolar(lt.tm_year + 1900, lt.tm_mon + 1,
                                           lt.tm_mday);
     char line[64];
@@ -844,10 +883,10 @@ void pageDate(float dt) {
       snprintf(line, sizeof(line), "上下滑切月");
     }
     char lineClip[52];
-    Txt::clip(CN12, line, 300, lineClip, sizeof(lineClip));
-    Txt::draw(10, 207, CN12, TH::AMBER, lineClip);
+    Txt::clip(CN12, line, 284, lineClip, sizeof(lineClip));
+    Txt::draw(18, 212, CN12, TH::AMBER, lineClip);
   }
-  Scene::footer(tft, TH::BG);
+  pageFooter();
   pageDots(3, true);
 }
 
@@ -892,7 +931,7 @@ void buildSettingRows(SetRow* rows, int& n) {
   snprintf(r.v, sizeof(r.v), "%d%%", s_bright);
   rows[n++] = r;
 
-  static const char* SPEC_NAMES[3] = {"放射条", "环形波纹", "光点绕圈"};
+  static const char* SPEC_NAMES[4] = {"放射条", "环形波纹", "光点绕圈", "歌词频谱"};
   r = SetRow{"频谱样式", "", TH::ACCENT, "spec", false, false, false};
   strlcpy(r.v, SPEC_NAMES[s_specStyle], sizeof(r.v));
   rows[n++] = r;
@@ -922,7 +961,7 @@ void pageSettings(float dt) {
   statusBar("设置", head);
 
   // 滚动窗口(同预览 SET_VIS/SET_PITCH/SET_TOP:5 行 × 36 + 24,让开页脚)
-  const int SET_VIS = 5, PITCH = 36, TOP = 24;
+  const int SET_VIS = 5, PITCH = 36, TOP = 28;
   int lo = s_setSel - SET_VIS + 1;
   if (lo < 0) lo = 0;
   if (lo > n - SET_VIS) lo = n > SET_VIS ? n - SET_VIS : 0;
@@ -934,35 +973,33 @@ void pageSettings(float dt) {
     const bool sel = (i == s_setSel);
     char id[16];
     snprintf(id, sizeof(id), "s.row.%d", i);
-    if (r.act) hitAdd(id, 8, y, 298, 34);
+    if (r.act) hitAdd(id, 12, y, 292, 34);
     const bool down = hitIsPressed(id);
-    if (down)
-      Gfx::cardGrad(tft, 8, y, 298, 34, 7, lerp565(TH::CARD_HI, TH::ACCENT, 77),
-                     TH::CARD_HI, TH::CARD);
-    else if (sel)
-      Gfx::cardGrad(tft, 8, y, 298, 34, 7, TH::GOLD_DK, TH::CARD, TH::CARD);
+    const uint16_t rowBg = down ? lerp565(TH::CARD_HI, TH::ACCENT, 35)
+                                : sel ? TH::CARD_HI : TH::CARD;
+    if (sel || down)
+      Gfx::card(tft, 12, y, 292, 34, 6, rowBg, TH::CARD);
     else
-      Gfx::cardRim(tft, 8, y, 298, 34, 7, TH::CARD, TH::LINE, TH::CARD);
+      Gfx::divider(tft, 22, y + 34, 272, TH::LINE, TH::CARD);
     if (sel || down) {
       const uint16_t rim = r.warn ? TH::AMBER : TH::ACCENT;
-      tft.drawSmoothRoundRect(8, y, 7, 5, 298, 34, rim, TH::CARD);
+      tft.fillRoundRect(12, y + 8, 3, 18, 1, rim);
     }
 
-    Txt::draw(18, y + 21, CN16, (sel || down) ? TH::TXT_HI : TH::TXT, r.k);
+    Txt::draw(22, y + 21, CN16, (sel || down) ? TH::TXT_HI : TH::TXT, r.k);
     if (r.bar) {
       Gfx::progress(tft, 150, y + 15, 100, 5, s_bright / 100.0f, TH::GOLD_DK,
-                     TH::ACCENT, TH::AMBER, TH::CARD);
-      Txt::drawRight(296, y + 21, NUM14, r.c, r.v);
+                     TH::ACCENT, TH::AMBER, rowBg);
+      Txt::drawRight(286, y + 21, CN12, r.c, r.v);
     } else if (r.v[0]) {
       char vc[40];
       Txt::clip(CN12, r.v, 150, vc, sizeof(vc));
-      Txt::drawRight(r.arrow ? 282 : 296, y + 21, CN12, r.c, vc);
+      Txt::drawRight(286, y + 21, CN12, r.c, vc);
     }
     if (r.arrow) {
       const uint16_t ac = (sel || down) ? TH::TXT_MID : TH::TXT_LO;
-      const uint16_t cbg = down ? TH::CARD_HI : (sel ? TH::CARD : TH::CARD);
-      tft.drawWideLine(290, y + 13, 297, y + 17, 1.4f, ac, cbg);
-      tft.drawWideLine(297, y + 17, 290, y + 21, 1.4f, ac, cbg);
+      tft.drawWideLine(292, y + 13, 297, y + 17, 1.4f, ac, rowBg);
+      tft.drawWideLine(297, y + 17, 292, y + 21, 1.4f, ac, rowBg);
     }
   }
 
@@ -973,7 +1010,7 @@ void pageSettings(float dt) {
     const int thY = trackY + (trackH - thH) * s_setScroll / (n - SET_VIS);
     tft.fillRoundRect(310, thY, 2, thH, 1, TH::ACCENT);
   }
-  Scene::footer(tft, TH::BG);
+  pageFooter();
   pageDots(4, true);
 }
 
@@ -1265,9 +1302,8 @@ void drawToast() {
   if (w < 80) w = 80;
   const int x = (SCR_W - w) / 2, y = s_page == PG_MUSIC ? 200 : 196;
   Gfx::beginBig(TH::BG);
-  Gfx::cardGrad(Gfx::big(), 0, 0, w, 24, 12, TH::RED_DK, TH::CARD, TH::BG);
-  // 红描边(同预览 cardGrad 的第三个色参),压在草地上也看得清边界
-  Gfx::big().drawSmoothRoundRect(0, 0, 12, 10, w, 24, TH::RED, TH::BG);
+  Gfx::cardGrad(Gfx::big(), 0, 0, w, 24, 12, TH::CARD_HI, TH::CARD, TH::BG);
+  Gfx::big().drawSmoothRoundRect(0, 0, 12, 10, w, 24, TH::RIM, TH::BG);
   Txt::drawCenter(w / 2, 16, CN12, TH::TXT_HI, clipT);
   Gfx::pushBigRegion(x, y, w, 24);
 }
@@ -1277,13 +1313,13 @@ void loadPrefs() {
   Preferences p;
   if (p.begin(NVS_UI_NS, true)) {
     s_bright = p.getUChar("br", 72);
-    s_specStyle = p.getUChar("sp", 0);
+    s_specStyle = p.getUChar("sp", 3);
     s_wxStyle = p.getUChar("wv", 0);
     p.end();
   }
   if (s_bright < 10) s_bright = 10;
   if (s_bright > 100) s_bright = 100;
-  if (s_specStyle > 2) s_specStyle = 0;
+  if (s_specStyle > 3) s_specStyle = 3;
   if (s_wxStyle > 1) s_wxStyle = 0;
 }
 
@@ -1326,8 +1362,7 @@ void render(float dt, bool contentChanged) {
   if (redrawBody || s_page == PG_MUSIC) hitClear();
   if (statics && redrawBody) {
     // 主体重绘必须先清底,否则新文字会叠在旧文字上(页脚随后重画,不受影响)
-    tft.fillScreen(TH::BG);
-    tft.fillRect(0, 19, SCR_W, Scene::FOOT_TOP - 19, TH::CARD);
+    pageSurface();
   }
   if (resetClockScene) {
     Scene::invalidateCache();
@@ -1388,7 +1423,8 @@ void tickSpecDemo(float dt) {
 void tickSpecBle(float dt) {
   s_specPhase += dt;   // 封面圆盘自转也用它,BLE 模式同样要走
   float target[16];
-  for (int i = 0; i < 16; ++i) target[i] = (float)g_media.spec[i];
+  for (int i = 0; i < 16; ++i)
+    target[i] = g_media.playing ? (float)g_media.spec[i] : 0.0f;
   tickSpec(dt, target);
 }
 
@@ -1629,9 +1665,9 @@ void handleGesture(Gesture g) {
       break;
     }
     case PG_MUSIC: {
-      s_specStyle = (uint8_t)((s_specStyle + 3 + (dir > 0 ? 1 : -1)) % 3);
+      s_specStyle = (uint8_t)((s_specStyle + 4 + (dir > 0 ? 1 : -1)) % 4);
       savePrefs();
-      static const char* SPEC_NAMES[3] = {"放射条", "环形波纹", "光点绕圈"};
+      static const char* SPEC_NAMES[4] = {"放射条", "环形波纹", "光点绕圈", "歌词频谱"};
       toast(SPEC_NAMES[s_specStyle]);
       break;
     }
@@ -1772,9 +1808,9 @@ static void doAct(const char* id, int x, int y) {
     return;
   }
   if (strcmp(id, "spec") == 0) {
-    s_specStyle = (uint8_t)((s_specStyle + 1) % 3);
+    s_specStyle = (uint8_t)((s_specStyle + 1) % 4);
     savePrefs();
-    static const char* SPEC_NAMES[3] = {"放射条", "环形波纹", "光点绕圈"};
+    static const char* SPEC_NAMES[4] = {"放射条", "环形波纹", "光点绕圈", "歌词频谱"};
     toast(SPEC_NAMES[s_specStyle]);
     return;
   }
@@ -1960,7 +1996,7 @@ static void doAct(const char* id, int x, int y) {
 
 void resetPrefs() {
   s_bright = 72;
-  s_specStyle = 0;
+  s_specStyle = 3;
   s_wxStyle = 0;
   s_setSel = 0;
   s_monthOff = 0;

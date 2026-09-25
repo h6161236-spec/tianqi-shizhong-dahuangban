@@ -10,6 +10,11 @@ Arduino 时钟、串口和触摸采样输入。覆盖 RGB888 降序/混合方向
 
 新增回归命令：
 
+- `python firmware/tools/test_text.py`：真实点阵字库的中文/英文混排换行、整句保留、截断宽度和不完整 UTF-8；逐像素检查环形页 148px 歌词窗口的完整滚动周期，覆盖负坐标裁剪、首尾衔接和长句无空白帧。
+- `powershell -File firmware/tools/test_media_text.ps1`：重复 META 保留歌词、换歌清理、META/LRC 接收顺序与重连。
+- `python firmware/tools/export_preview_fonts.py --check`：字形逐像素与固件原解码器比对。
+- `node preview/tools/browser-check.js`：实际桌面/手机视口与页面截图检查。
+
 - `powershell -File firmware/tools/test_scene.ps1`：编译真实 `scene.cpp`，对比一分钟小雨及云、雨雪、昼夜、角标退出的局部合成和完整重绘像素。
 - `powershell -File firmware/tools/test_weather_schedule.ps1`：断网重连、30 分钟周期和退避调度。
 - `powershell -File firmware/tools/test_wifi.ps1`：编译真实配网管理，模拟错误密码、错误 SSID 回退和成功后保存。
@@ -24,10 +29,10 @@ Arduino 时钟、串口和触摸采样输入。覆盖 RGB888 降序/混合方向
 
 这些检查不等于硬件显示或 BLE 端到端测试。刷机后需确认：
 
-1. 唱盘浅蓝、皮卡丘黄色，局部矩形与周围背景颜色一致，天空无异常彩条。
+1. 页面暖米色、频谱绿金色、皮卡丘黄色，局部矩形与周围背景颜色一致，天空无异常彩条。
 2. 时钟页向左/右快速和慢速滑动各 10 次，能翻页。
 3. 手机播放时点暂停，再点播放，各重复 5 次，手机实际状态随之切换。
-4. 连续切换至少 10 行歌词，只有歌词区替换；重复相同歌词不重画文字区。
+4. 上下滑可切四种音乐样式，新增歌词频谱两行换页；连续切换至少 10 行歌词，只有歌词区替换；重复相同歌词不重画文字区。
 5. 晴天、小雨、多云和密集降水各观察至少一分钟，检查时间/农历/天气卡、脚部、提示退出、残影与闪烁，并记录帧率、触摸响应和空闲堆。
 
 若按钮仍无效，串口 115200 的 `[touch]` 和 `[ble] btn=... notify=...`

@@ -1,0 +1,269 @@
+diff --git a/android/app/src/main/java/com/cyd/music/MediaSourcePolicy.kt b/android/app/src/main/java/com/cyd/music/MediaSourcePolicy.kt
+index 30185de..092367c 100644
+--- a/android/app/src/main/java/com/cyd/music/MediaSourcePolicy.kt
++++ b/android/app/src/main/java/com/cyd/music/MediaSourcePolicy.kt
+@@ -3,15 +3,17 @@ package com.cyd.music
+ /**
+  * MediaSession 与播放器通知的职责边界。
+  *
+- * 活动 MediaSession 是歌曲身份的主来源；通知只在没有会话时兜底。
++ * 活动 MediaSession 是歌曲身份的主来源；小米会话只有歌词时由通知补歌名。
+  * 小米音乐带 MIUI focus 字段的通知在息屏后会冻结，但 MediaSession 仍会
+  * 持续更新歌词，所以此时连通知歌词也不能采用，否则重绑监听器会把旧歌词
+  * 重新覆盖到板子上。
+  */
+ object MediaSourcePolicy {
+ 
+-    fun notificationMaySetTrack(sessionPackage: String?): Boolean =
+-        sessionPackage == null
++    fun notificationMaySetTrack(
++        sessionPackage: String?, sessionHasTrack: Boolean = true
++    ): Boolean = sessionPackage == null ||
++        (sessionPackage == "com.miui.player" && !sessionHasTrack)
+ 
+     fun notificationMaySetLyric(
+         notificationPackage: String,
+@@ -19,6 +21,9 @@ object MediaSourcePolicy {
+         hasMiuiFocus: Boolean
+     ): Boolean {
+         if (sessionPackage != null && notificationPackage != sessionPackage) return false
++        // Xiaomi session titles keep updating while notification lyrics can
++        // freeze on the lock screen, even without the optional focus JSON.
++        if (sessionPackage == "com.miui.player") return false
+         if (sessionPackage == notificationPackage && hasMiuiFocus) return false
+         return true
+     }
+diff --git a/android/app/src/main/java/com/cyd/music/MediaWatcher.kt b/android/app/src/main/java/com/cyd/music/MediaWatcher.kt
+index 73d9cf6..acd2501 100644
+--- a/android/app/src/main/java/com/cyd/music/MediaWatcher.kt
++++ b/android/app/src/main/java/com/cyd/music/MediaWatcher.kt
+@@ -76,6 +76,7 @@ class MediaWatcher(
+         }
+         controller = null
+         MusicBus.sessionPackage = null
++        MusicBus.sessionHasTrack = false
+     }
+ 
+     /**
+@@ -136,9 +137,16 @@ class MediaWatcher(
+         val title = md.getText(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.toString()
+             ?: md.getText(MediaMetadata.METADATA_KEY_TITLE)?.toString()
+ 
+-        val fields = Protocol.parseSessionFields(title, subtitle) ?: return
++        val fields = Protocol.parseSessionFields(title, subtitle, controller?.packageName) ?: return
++        val hadTrack = MusicBus.sessionHasTrack
++        MusicBus.sessionHasTrack = fields.song.isNotEmpty()
+         Log.d(TAG, "媒体元数据: ${fields.song} - ${fields.artist}; 歌词=${fields.lyric}")
+-        NowPlaying.setTrack(fields.song, fields.artist, NowPlaying.SRC_SESSION)
++        if (fields.song.isNotEmpty()) {
++            NowPlaying.setTrack(fields.song, fields.artist, NowPlaying.SRC_SESSION)
++        } else if (hadTrack) {
++            // Recover the identity before applying this live lyric.
++            MusicNotificationListener.refresh(ctx)
++        }
+         if (fields.lyric.isNotEmpty()) NowPlaying.setLyric(fields.lyric)
+     }
+ 
+diff --git a/android/app/src/main/java/com/cyd/music/MusicBus.kt b/android/app/src/main/java/com/cyd/music/MusicBus.kt
+index c9086a4..7db211f 100644
+--- a/android/app/src/main/java/com/cyd/music/MusicBus.kt
++++ b/android/app/src/main/java/com/cyd/music/MusicBus.kt
+@@ -23,6 +23,8 @@ object MusicBus {
+      * 写 setTrack 且结论不一致时会来回打架,每次都重发 META 并清空歌词。
+      */
+     @Volatile var sessionPackage: String? = null
++    /** Xiaomi may expose only a lyric, with no track identity in its session. */
++    @Volatile var sessionHasTrack: Boolean = false
+ 
+     /** 数据出口:服务启动时注册,把一行协议文本写入蓝牙 */
+     @Volatile var sender: ((String) -> Unit)? = null
+diff --git a/android/app/src/main/java/com/cyd/music/MusicNotificationListener.kt b/android/app/src/main/java/com/cyd/music/MusicNotificationListener.kt
+index d4c3e10..245c9f1 100644
+--- a/android/app/src/main/java/com/cyd/music/MusicNotificationListener.kt
++++ b/android/app/src/main/java/com/cyd/music/MusicNotificationListener.kt
+@@ -117,19 +117,25 @@ class MusicNotificationListener : NotificationListenerService() {
+         if (!isMediaNotification(sbn, n)) return
+ 
+         val ex = n.extras ?: return
+-        fun str(key: String) = Protocol.clean(ex.getCharSequence(key)?.toString())
++        fun str(key: String) = Protocol.clean(
++            ex.getCharSequence(key)?.toString(), Protocol.MAX_LYRIC_BYTES
++        )
+ 
+         val title = str(Notification.EXTRA_TITLE)
+         val text = str(Notification.EXTRA_TEXT)
+-        val ticker = Protocol.clean(n.tickerText?.toString())
++        val ticker = Protocol.clean(n.tickerText?.toString(), Protocol.MAX_LYRIC_BYTES)
+         val bigText = str(Notification.EXTRA_BIG_TEXT)
+         val subText = str(Notification.EXTRA_SUB_TEXT)
+         val focusTitle = Protocol.clean(
+             Protocol.miuiFocusTitle(ex.getString(MIUI_FOCUS))
+         )
+         val sessionPackage = MusicBus.sessionPackage
++        if (sessionPackage != null && sbn.packageName != sessionPackage) return
+         val notificationMaySetTrack =
+-            MediaSourcePolicy.notificationMaySetTrack(sessionPackage)
++            MediaSourcePolicy.notificationMaySetTrack(sessionPackage, MusicBus.sessionHasTrack)
++        // A fallback identity must not outrank a later complete session.
++        val focusPriority = if (sessionPackage == "com.miui.player")
++            NowPlaying.SRC_SESSION else NowPlaying.SRC_FOCUS
+ 
+         // ---------- 第一步:定歌曲身份 ----------
+         // 先认灵动岛 JSON 里的干净歌名(实测最准),再退回文本里拆。
+@@ -143,7 +149,7 @@ class MusicNotificationListener : NotificationListenerService() {
+                     artist = Protocol.artistAfterTitle(text, focusTitle)
+                 }
+                 if (notificationMaySetTrack) {
+-                    NowPlaying.setTrack(focusTitle, artist, NowPlaying.SRC_FOCUS)
++                    NowPlaying.setTrack(focusTitle, artist, focusPriority)
+                 }
+             }
+ 
+@@ -151,10 +157,11 @@ class MusicNotificationListener : NotificationListenerService() {
+                 // 没有 MediaSession 兜底时才靠猜:「歌名 - 歌手」塞在正文里
+                 combo = text
+                 val (s, a) = Protocol.splitTitleArtist(text)
+-                NowPlaying.setTrack(s, a, NowPlaying.SRC_NOTI)
++                NowPlaying.setTrack(s, a, if (sessionPackage == "com.miui.player")
++                    NowPlaying.SRC_SESSION else NowPlaying.SRC_NOTI)
+             }
+ 
+-            notificationMaySetTrack && title.isNotEmpty() -> {
++            notificationMaySetTrack && title.isNotEmpty() && sessionPackage != "com.miui.player" -> {
+                 // 最常规的布局:标题是歌名,正文是歌手
+                 NowPlaying.setTrack(title, text, NowPlaying.SRC_NOTI)
+             }
+diff --git a/android/app/src/main/java/com/cyd/music/NowPlaying.kt b/android/app/src/main/java/com/cyd/music/NowPlaying.kt
+index a9251fd..ea49786 100644
+--- a/android/app/src/main/java/com/cyd/music/NowPlaying.kt
++++ b/android/app/src/main/java/com/cyd/music/NowPlaying.kt
+@@ -66,7 +66,7 @@ object NowPlaying {
+     /** 更新歌词行 —— 和歌名/歌手重复的内容不算歌词 */
+     @Synchronized
+     fun setLyric(rawLyric: String?) {
+-        val l = Protocol.clean(rawLyric)
++        val l = Protocol.clean(rawLyric, Protocol.MAX_LYRIC_BYTES)
+         if (l.isEmpty() || l == lyric) return
+         if (l == song || l == artist) return
+         // 「歌名 - 歌手」这种拼好的整串也不是歌词
+diff --git a/android/app/src/main/java/com/cyd/music/Protocol.kt b/android/app/src/main/java/com/cyd/music/Protocol.kt
+index ccb55f0..73c6354 100644
+--- a/android/app/src/main/java/com/cyd/music/Protocol.kt
++++ b/android/app/src/main/java/com/cyd/music/Protocol.kt
+@@ -17,13 +17,14 @@ object Protocol {
+         val lyric: String
+     )
+ 
+-    /** 单字段最长字节数:板子 320px 宽显示不下更多,也省蓝牙带宽 */
++    /** Metadata fits the firmware's 128-byte fields; lyrics use 256 bytes. */
+     private const val MAX_FIELD_BYTES = 120
++    const val MAX_LYRIC_BYTES = 255
+ 
+     /**
+      * 洗掉换行 / 竖线 / 控制字符,并按 UTF-8 字节数截断(不切碎多字节字符)。
+      */
+-    fun clean(raw: String?): String {
++    fun clean(raw: String?, maxBytes: Int = MAX_FIELD_BYTES): String {
+         if (raw.isNullOrEmpty()) return ""
+         val sb = StringBuilder(raw.length)
+         for (ch in raw) {
+@@ -34,7 +35,7 @@ object Protocol {
+                 else -> sb.append(ch)
+             }
+         }
+-        return truncateUtf8(sb.toString().trim(), MAX_FIELD_BYTES)
++        return truncateUtf8(sb.toString().trim(), maxBytes)
+     }
+ 
+     /** 按 UTF-8 字节上限截断,保证不在多字节字符中间切开 */
+@@ -60,7 +61,7 @@ object Protocol {
+     fun meta(title: String?, artist: String?) = "META|${clean(title)}|${clean(artist)}"
+ 
+     /** `LRC|当前歌词行` */
+-    fun lrc(line: String?) = "LRC|${clean(line)}"
++    fun lrc(line: String?) = "LRC|${clean(line, MAX_LYRIC_BYTES)}"
+ 
+     /** `PLAY|1` / `PLAY|0` —— 播放中 / 已暂停(让板子能区分"暂停"和"App 掉线") */
+     fun play(playing: Boolean) = "PLAY|${if (playing) 1 else 0}"
+@@ -115,8 +116,10 @@ object Protocol {
+      * subtitle；即使息屏后通知完全冻结，这两个 MediaSession 字段仍持续更新。
+      * 普通播放器则通常是 title=歌名、subtitle=歌手，此时不把 title 当歌词。
+      */
+-    fun parseSessionFields(rawTitle: String?, rawSubtitle: String?): SessionFields? {
+-        val title = clean(rawTitle)
++    fun parseSessionFields(
++        rawTitle: String?, rawSubtitle: String?, playerPackage: String? = null
++    ): SessionFields? {
++        val title = clean(rawTitle, MAX_LYRIC_BYTES)
+         val subtitle = clean(rawSubtitle)
+ 
+         if (subtitle.contains(" - ")) {
+@@ -131,7 +134,11 @@ object Protocol {
+         }
+ 
+         if (title.isEmpty()) return null
+-        return SessionFields(title, subtitle, "")
++        // Some HyperOS versions expose title=lyric, artist=<unknown>.
++        // The notification supplies the song identity; never promote this
++        // changing lyric to META or every line will clear the lyric window.
++        if (playerPackage == "com.miui.player") return SessionFields("", "", title)
++        return SessionFields(clean(title), subtitle, "")
+     }
+ 
+     /**
+diff --git a/android/app/src/test/java/com/cyd/music/VerifyMediaSync.kt b/android/app/src/test/java/com/cyd/music/VerifyMediaSync.kt
+index 63e8b7b..6b99ece 100644
+--- a/android/app/src/test/java/com/cyd/music/VerifyMediaSync.kt
++++ b/android/app/src/test/java/com/cyd/music/VerifyMediaSync.kt
+@@ -25,6 +25,28 @@ object VerifyMediaSync {
+         )
+         check(duplicateTitle.lyric.isEmpty())
+ 
++        // Redmi/HyperOS observed on 2026-09-25: the session's artist is
++        // <unknown>; only the notification contains the actual track name.
++        val lyricOnly = requireFields(Protocol.parseSessionFields(
++            "歌唱也如梭,困住心如窝。\n", "<unknown>", "com.miui.player"
++        ))
++        check(lyricOnly.song.isEmpty())
++        check(lyricOnly.artist.isEmpty())
++        check(lyricOnly.lyric == "歌唱也如梭,困住心如窝。")
++        val ordinaryUnknown = requireFields(Protocol.parseSessionFields(
++            "普通歌名", "<unknown>", "com.netease.cloudmusic"
++        ))
++        check(ordinaryUnknown.song == "普通歌名" && ordinaryUnknown.lyric.isEmpty())
++        val longLyric = "歌词".repeat(35)
++        check(Protocol.lrc(longLyric) == "LRC|$longLyric")
++        check(Protocol.parseSessionFields(longLyric, "<unknown>", "com.miui.player")?.lyric == longLyric)
++        check(Protocol.lrc("歌".repeat(100)).removePrefix("LRC|").toByteArray().size == 255)
++        check(MediaSourcePolicy.notificationMaySetTrack("com.miui.player", false))
++        check(!MediaSourcePolicy.notificationMaySetTrack("com.miui.player", true))
++        check(!MediaSourcePolicy.notificationMaySetLyric(
++            "com.miui.player", "com.miui.player", hasMiuiFocus = false
++        ))
++
+         check(!MediaSourcePolicy.notificationMaySetTrack("com.miui.player"))
+         check(MediaSourcePolicy.notificationMaySetTrack(null))
+         check(
+@@ -47,6 +69,22 @@ object VerifyMediaSync {
+             )
+         )
+ 
++        val sent = mutableListOf<String>()
++        MusicBus.sender = { sent.add(it) }
++        NowPlaying.clear()
++        // Replay the phone's split sources, then several live lyric updates.
++        NowPlaying.setTrack("我恨明月不照我", "未知歌手", NowPlaying.SRC_SESSION)
++        NowPlaying.setLyric(lyricOnly.lyric)
++        sent.clear()
++        NowPlaying.setTrack("我恨明月不照我", "未知歌手", NowPlaying.SRC_SESSION)
++        NowPlaying.setLyric(longLyric)
++        NowPlaying.setLyric(longLyric)
++        check(sent == listOf("LRC|$longLyric"))
++        sent.clear()
++        NowPlaying.resend()
++        check(sent.take(2) == listOf("META|我恨明月不照我|未知歌手", "LRC|$longLyric"))
++        NowPlaying.clear()
++        MusicBus.sender = null
+         println("media sync regression checks passed")
+     }
+ 

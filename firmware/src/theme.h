@@ -1,7 +1,7 @@
 // =====================================================================
-//  蓝白界面配色 —— 与网页预览 preview/ui.html 完全一致的 18 色
+//  暖纸 / 苔绿 / 琥珀配色 —— 与网页预览 preview/ui.html 一致
 //  所有颜色都是 RGB565,数值 = rgb565(r,g,b) 编译期算好
-//  页面淡蓝底、白色内容区、主蓝交互;皮卡丘精灵调色板独立保留
+//  页面暖纸底、象牙白内容区、苔绿交互;皮卡丘精灵调色板独立保留
 // =====================================================================
 #pragma once
 #include <Arduino.h>
@@ -36,23 +36,23 @@ constexpr uint16_t dim565(uint16_t bg, uint16_t c, uint8_t p) { return lerp565(b
 // ============================ 主题色表 ================================
 // (名字 = 预览里的常量名,值 = 预览 hex 经 RGB565 量化,已在网页端对齐)
 namespace TH {
-constexpr uint16_t BG       = hex565(0xEDF6FD);  // 页面淡蓝底
-constexpr uint16_t CARD     = hex565(0xFFFFFF);  // 卡片
-constexpr uint16_t CARD_HI  = hex565(0xD9ECFF);  // 浅蓝选中态
-constexpr uint16_t RIM      = hex565(0xC8DDED);  // 卡片描边
-constexpr uint16_t LINE     = hex565(0xD7E6F2);  // 分割线
-constexpr uint16_t ACCENT   = hex565(0x267EC7);  // 主蓝
-constexpr uint16_t GOLD_DK  = hex565(0xD9ECFF);  // 旧名称,浅蓝
-constexpr uint16_t RED      = hex565(0xD94C54);  // 危险
-constexpr uint16_t RED_DK   = hex565(0xFCE7E8);  // 危险浅色
-constexpr uint16_t BLUE     = hex565(0x267EC7);  // 信息
-constexpr uint16_t GREEN    = hex565(0x31946D);  // 节气/成功
-constexpr uint16_t AMBER    = hex565(0xC57C21);  // 高温/警示
-constexpr uint16_t PINK     = hex565(0xC65C78);  // 周末
-constexpr uint16_t TXT_HI   = hex565(0x1B3650);  // 深蓝标题
-constexpr uint16_t TXT      = hex565(0x35546C);  // 正文
-constexpr uint16_t TXT_MID  = hex565(0x6D879C);  // 次要文本
-constexpr uint16_t TXT_LO   = hex565(0x9FB5C7);  // 弱文本
+constexpr uint16_t BG       = hex565(0xF0EBDD);  // 暖纸底色
+constexpr uint16_t CARD     = hex565(0xFAF6EA);  // 象牙白
+constexpr uint16_t CARD_HI  = hex565(0xE5DDBF);  // 亚麻选中态
+constexpr uint16_t RIM      = hex565(0xCBC5AD);
+constexpr uint16_t LINE     = hex565(0xE3DDCC);
+constexpr uint16_t ACCENT   = hex565(0x536B45);  // 苔绿
+constexpr uint16_t GOLD_DK  = hex565(0xF1D991);  // 柔和琥珀
+constexpr uint16_t RED      = hex565(0xB74E3E);
+constexpr uint16_t RED_DK   = hex565(0xF5DFD5);
+constexpr uint16_t BLUE     = hex565(0x607F72);  // 低温/信息
+constexpr uint16_t GREEN    = hex565(0x536B45);
+constexpr uint16_t AMBER    = hex565(0xB58132);
+constexpr uint16_t PINK     = hex565(0xA36552);
+constexpr uint16_t TXT_HI   = hex565(0x303B2C);
+constexpr uint16_t TXT      = hex565(0x4C5642);
+constexpr uint16_t TXT_MID  = hex565(0x727762);
+constexpr uint16_t TXT_LO   = hex565(0x858874);
 
 // ---- 参考工程遗留别名(直接复用的 keyboard/wifi 等模块用旧名字) ----
 constexpr uint16_t CYAN     = ACCENT;
@@ -63,8 +63,8 @@ constexpr uint16_t ROSE     = RED;
 constexpr uint16_t ROSE_DK  = RED_DK;
 constexpr uint16_t ACCENT_DK= GOLD_DK;
 
-// 强调色按 t(0-255) 从主蓝过渡到蓝青。
-inline uint16_t neon(uint8_t t = 128) { return lerp565(ACCENT, hex565(0x45BFD3), t); }
+// 强调色按 t(0-255) 从苔绿过渡到琥珀金。
+inline uint16_t neon(uint8_t t = 128) { return lerp565(ACCENT, hex565(0xD7AD4D), t); }
 }  // namespace TH
 
 // ========================== 皮卡丘精灵调色板 ==========================

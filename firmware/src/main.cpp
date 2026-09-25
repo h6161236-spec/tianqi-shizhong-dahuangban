@@ -40,6 +40,7 @@
 #include "wx.h"
 #include "weather_schedule.h"
 #include "utf8_copy.h"
+#include "media_text.h"
 
 // =====================================================================
 //  屏幕 / 背光
@@ -627,9 +628,7 @@ static void parseBleLine(char* line) {
     char* br = strchr(p, '|');
     if (br) *br = 0;
     portENTER_CRITICAL(&g_bleMux);
-    Utf8::copy(g_bleMailbox.title, sizeof(g_bleMailbox.title), p);
-    Utf8::copy(g_bleMailbox.artist, sizeof(g_bleMailbox.artist), br ? br + 1 : "");
-    g_bleMailbox.metaChanged = true;
+    MediaText::queueMetadata(g_bleMailbox, p, br ? br + 1 : "");
     portEXIT_CRITICAL(&g_bleMux);
   } else if (strncmp(line, "LRC|", 4) == 0) {
     portENTER_CRITICAL(&g_bleMux);

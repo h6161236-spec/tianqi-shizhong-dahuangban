@@ -35,6 +35,12 @@ int main() {
   Utf8::copy(byteLimited, sizeof(byteLimited), "克孜勒苏", 7);
   check(strcmp(byteLimited, "克孜") == 0,
         "UTF-8 byte limit never cuts a Han character");
+  const char truncated[] = {char(0xF0), 0};
+  check(Utf8::charBytes(truncated) == 1, "truncated UTF-8 traversal stays in buffer");
+  Utf8::copy(byteLimited, sizeof(byteLimited), truncated);
+  check(byteLimited[0] == 0, "truncated UTF-8 is not copied");
+  check(Utf8::charBytes("歌") == 3 && Utf8::charBytes("A") == 1,
+        "mixed CJK/Latin character boundaries");
   const LunarDate endTenth = Lunar::fromSolar(2048, 12, 4);
   check(endTenth.valid && endTenth.year == 2048 && endTenth.month == 10 &&
         endTenth.day == 29, "HKO 2048 tenth month is 29 days");
