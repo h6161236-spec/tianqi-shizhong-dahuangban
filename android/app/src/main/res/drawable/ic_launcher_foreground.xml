@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    前景:四根高低不同的频谱柱 + 一个音符点。
+    自适应图标的安全区是中间 72x72(共 108x108),图形都画在里面,
+    免得被各家启动器的圆形/方形遮罩切掉。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 频谱柱,从左到右由青转紫 -->
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M38,62 h6 a3,3 0 0 1 3,3 v0 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v0 a3,3 0 0 1 3,-3 z" />
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M35,50 h12 v18 h-12 z" />
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M50,40 h12 v28 h-12 z" />
+    <path
+        android:fillColor="#818CF8"
+        android:pathData="M65,46 h12 v22 h-12 z" />
+
+    <!-- 音符:符头 + 符干 -->
+    <path
+        android:fillColor="#A78BFA"
+        android:pathData="M62,34 m0,0 a7,6 0 1 0 0.1,0 z" />
+    <path
+        android:fillColor="#A78BFA"
+        android:pathData="M67,34 h4 v-14 h-4 z" />
+    <path
+        android:fillColor="#A78BFA"
+        android:pathData="M71,20 c6,1 10,3 12,6 c-3,-1 -7,-2 -12,-2 z" />
+</vector>

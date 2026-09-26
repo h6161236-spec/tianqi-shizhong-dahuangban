@@ -1,0 +1,7 @@
+// 顶层构建文件
+// AGP 8.7.3:8.5.x 会对 compileSdk 35 报「建议升级插件」,8.7 才正式支持 35。
+// 配套 Gradle 需要 8.9+,wrapper 里锁的是 8.14.3。
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+}

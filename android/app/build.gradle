@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.cyd.music'
+    // 35:本机 SDK 装了 35 和 36。要 34 以上才认 FOREGROUND_SERVICE_MEDIA_PROJECTION 权限。
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.cyd.music"
+        // 29 = Android 10:AudioPlaybackCapture(抓系统音频做频谱)的最低要求。
+        // 再低的机器连不上这个功能,留着只会多一堆分支。
+        minSdk 29
+        targetSdk 35
+        versionCode 2
+        versionName "1.0.2"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+// 零外部依赖:蓝牙/频谱/通知监听全部使用系统 API
+dependencies {
+}
+
+// 无外部测试框架的回归入口：当前工程保持零三方运行依赖，也能离线验证
+// MediaSession 解析与通知仲裁。执行：gradlew verifyMediaSync
+tasks.register('verifyMediaSync', JavaExec) {
+    dependsOn 'compileDebugUnitTestKotlin'
+    classpath = files(
+        layout.buildDirectory.dir('tmp/kotlin-classes/debugUnitTest'),
+        layout.buildDirectory.dir('tmp/kotlin-classes/debug')
+    ) + configurations.debugUnitTestRuntimeClasspath
+    mainClass = 'com.cyd.music.VerifyMediaSync'
+}

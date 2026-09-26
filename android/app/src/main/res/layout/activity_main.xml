@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 提示文字会随状态变长,整页套 ScrollView,小屏手机不会把按钮挤出屏幕 -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootScroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="@color/text_hi"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="6dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ESP32 桌面摆件 · 频谱 / 歌词 / 歌曲信息发送器"
+            android:textColor="@color/text_dim"
+            android:textSize="13sp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="未启动"
+            android:textColor="@color/accent"
+            android:textSize="16sp"
+            android:background="@color/card"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp" />
+
+        <!-- 当前识别到的歌名/歌手/歌词,用来确认解析对不对 -->
+        <TextView
+            android:id="@+id/tvNow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="未检测到播放器"
+            android:textColor="@color/text_hi"
+            android:textSize="14sp"
+            android:background="@color/card"
+            android:padding="14dp"
+            android:minLines="2"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/btnRealSpectrum"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:text="选择音乐 App 并开始"
+            android:textSize="17sp"
+            android:layout_marginBottom="10dp" />
+
+        <Button
+            android:id="@+id/btnCreateShortcut"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:text="创建桌面快捷方式"
+            android:layout_marginBottom="10dp" />
+
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:text="停止"
+            android:textSize="17sp"
+            android:layout_marginBottom="10dp" />
+
+        <Button
+            android:id="@+id/btnNotiPerm"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:text="通知使用权设置"
+            android:textSize="14sp"
+            android:layout_marginBottom="18dp" />
+
+        <TextView
+            android:id="@+id/tvTips"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text_dim"
+            android:textSize="13sp"
+            android:lineSpacingExtra="3dp" />
+
+    </LinearLayout>
+</ScrollView>

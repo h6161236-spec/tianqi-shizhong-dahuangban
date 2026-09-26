@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标底色,跟板子界面和 App 主题的深色背景保持一致 -->
+    <color name="ic_launcher_background">#14141E</color>
+
+    <color name="bg">#FF14141E</color>
+    <color name="card">#FF1E1E2D</color>
+    <color name="text_hi">#FFF0F0F5</color>
+    <color name="text_dim">#FF9090A5</color>
+    <color name="accent">#FF6FE7DD</color>
+    <color name="warn">#FFFFB454</color>
+</resources>

@@ -2,6 +2,7 @@
 
 ESP32-2432S028(ESP32 + ILI9341 2.8 寸 320×240 触摸屏)的 5 页面桌面摆件项目。
 固件和 [网页预览](preview/ui.html)同步维护;固件由 `firmware/` 构建,可烧录镜像放在 `release/`。
+配套的手机端蓝牙同步 App(Android,推送歌名/歌词/频谱)源码在 `android/`。
 
 ## 页面(5 个)
 
@@ -118,6 +119,10 @@ ESP32-2432S028(ESP32 + ILI9341 2.8 寸 320×240 触摸屏)的 5 页面桌面摆�
     ├── _shot/             截图产物(自检用,可随时删)
     ├── _pika/             早期参考素材(官方 GIF/PNG;ui.html 已不依赖任何图片)
     └── references/        调研资料 + 参考界面截图
+└── android/            手机端「CYD 音乐同步」Android 源码(Kotlin + Gradle)
+    ├── app/src/main/java/com/cyd/music/   BLE 客户端 · 媒体会话/通知监听 · 协议 · 频谱 · 快捷入口
+    ├── app/src/test/java/com/cyd/music/VerifyMediaSync.kt  媒体同步回归测试
+    └── 快捷启动使用说明.md                安装与授权说明
 ```
 
 写 .ps1 脚本注意:Windows PowerShell 5.1 按 ANSI 读脚本文件,里面**不能写中文**(会乱码成语法错误);
